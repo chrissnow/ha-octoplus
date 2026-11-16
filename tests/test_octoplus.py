@@ -190,3 +190,50 @@ async def test_unsupported_history_not_retried(hass: HomeAssistant):
     from homeassistant.helpers import device_registry as dr
     dev = dr.async_get(hass).async_get_device(identifiers={(DOMAIN, "A-9")})
     assert dev.manufacturer == "Chris Snow"
+
+
+class _FakeResources:
+    loaded = True
+
+    def __init__(self, items):
+        self.items = [dict(i) for i in items]
+
+    def async_items(self):
+        return self.items
+
+    async def async_create_item(self, data):
+        self.items.append({"id": "new", **data})
+
+    async def async_update_item(self, item_id, data):
+        next(i for i in self.items if i["id"] == item_id).update(data)
+
+    async def async_delete_item(self, item_id):
+        self.items = [i for i in self.items if i["id"] != item_id]
+
+
+async def test_card_resource_registration(hass: HomeAssistant):
+    from unittest.mock import MagicMock
+    import custom_components.octoplus as integ
+
+    hass.http = MagicMock(async_register_static_paths=AsyncMock())
+    # create when missing
+    res = _FakeResources([{"id": "x", "url": "/local/other.js", "res_type": "module"}])
+    with patch.object(integ, "_lovelace_resources", return_value=res):
+        await integ._async_register_card(hass)
+    mine = [i for i in res.items if i["url"].startswith("/octoplus/")]
+    assert len(mine) == 1 and mine[0]["url"].startswith("/octoplus/octoplus-card.js?v=")
+    # update stale version and drop duplicates; leave others alone
+    res = _FakeResources([
+        {"id": "a", "url": "/octoplus/octoplus-card.js?v=old", "res_type": "module"},
+        {"id": "b", "url": "/octoplus/octoplus-card.js?v=older", "res_type": "module"},
+        {"id": "x", "url": "/local/other.js", "res_type": "module"},
+    ])
+    with patch.object(integ, "_lovelace_resources", return_value=res):
+        await integ._async_register_card(hass)
+    ids = [i["id"] for i in res.items]
+    assert ids == ["a", "x"] and res.items[0]["url"] == mine[0]["url"]
+    # YAML mode -> falls back to extra JS url
+    with patch.object(integ, "_lovelace_resources", return_value=None), \
+         patch("homeassistant.components.frontend.add_extra_js_url") as add:
+        await integ._async_register_card(hass)
+    add.assert_called_once()

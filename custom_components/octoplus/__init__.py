@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from pathlib import Path
 
 import voluptuous as vol
@@ -16,6 +17,8 @@ from homeassistant.helpers.typing import ConfigType
 from .api import OctoplusError
 from .const import ATTR_CONFIG_ENTRY_ID, ATTR_OFFER_SLUG, DOMAIN, SERVICE_CLAIM_OFFER
 from .coordinator import OctoplusCoordinator
+
+_LOGGER = logging.getLogger(__name__)
 
 PLATFORMS = [Platform.SENSOR, Platform.BUTTON]
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
@@ -33,11 +36,35 @@ CLAIM_SCHEMA = vol.Schema(
 CARD_URL = "/octoplus/octoplus-card.js"
 
 
+def _lovelace_resources(hass: HomeAssistant):
+    """Return Lovelace's storage-mode resource collection, or None."""
+    data = None
+    try:
+        from homeassistant.components.lovelace.const import LOVELACE_DATA
+
+        data = hass.data.get(LOVELACE_DATA)
+    except ImportError:
+        data = hass.data.get("lovelace")
+    if data is None:
+        return None
+    res = getattr(data, "resources", None)
+    if res is None and isinstance(data, dict):
+        res = data.get("resources")
+    # YAML-mode resources can't be changed via the API
+    if res is None or not hasattr(res, "async_create_item"):
+        return None
+    return res
+
+
 async def _async_register_card(hass: HomeAssistant) -> None:
-    """Serve the Octoplus card and load it on every dashboard."""
+    """Serve the Octoplus card and register it as a dashboard resource.
+
+    A Lovelace resource is fetched when a dashboard opens, so the card is
+    available no matter when the page was loaded relative to HA start-up.
+    Falls back to an extra JS URL when resources are in YAML mode.
+    """
     if hass.http is None:  # e.g. in tests without http
         return
-    from homeassistant.components.frontend import add_extra_js_url
     from homeassistant.components.http import StaticPathConfig
 
     path = Path(__file__).parent / "frontend" / "octoplus-card.js"
@@ -48,7 +75,29 @@ async def _async_register_card(hass: HomeAssistant) -> None:
     digest = await hass.async_add_executor_job(
         lambda: hashlib.sha256(path.read_bytes()).hexdigest()[:10]
     )
-    add_extra_js_url(hass, f"{CARD_URL}?v={digest}")
+    url = f"{CARD_URL}?v={digest}"
+
+    resources = _lovelace_resources(hass)
+    if resources is not None:
+        try:
+            if not getattr(resources, "loaded", True):
+                await resources.async_load()
+                resources.loaded = True
+            mine = [r for r in resources.async_items() if str(r.get("url", "")).split("?")[0] == CARD_URL]
+            if not mine:
+                await resources.async_create_item({"res_type": "module", "url": url})
+            else:
+                if mine[0].get("url") != url:
+                    await resources.async_update_item(mine[0]["id"], {"res_type": "module", "url": url})
+                for extra in mine[1:]:
+                    await resources.async_delete_item(extra["id"])
+            return
+        except Exception as err:  # noqa: BLE001 - fall back below
+            _LOGGER.warning("Couldn't register Octoplus card as a dashboard resource: %s", err)
+
+    from homeassistant.components.frontend import add_extra_js_url
+
+    add_extra_js_url(hass, url)
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:

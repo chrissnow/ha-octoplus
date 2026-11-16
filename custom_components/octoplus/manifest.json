@@ -9,9 +9,10 @@
   "integration_type": "service",
   "iot_class": "cloud_polling",
   "requirements": [],
-  "version": "0.4.1",
+  "version": "0.4.2",
   "after_dependencies": [
     "frontend",
-    "http"
+    "http",
+    "lovelace"
   ]
 }
