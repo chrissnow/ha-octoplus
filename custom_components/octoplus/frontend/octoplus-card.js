@@ -87,6 +87,7 @@ class OctoplusCard extends HTMLElement {
       scratch: pick("scratchcard", "sensor", "scratchcard"),
       scratchBtn: pick("scratch", "button", "scratch_now"),
       spinBtn: pick("spin", "button", "spin_wheel"),
+      happy: pick("happy_hour", "sensor", "happy_hour"),
     };
   }
 
@@ -123,6 +124,45 @@ class OctoplusCard extends HTMLElement {
       this._toast(`Claimed ${r.offer || slug}${r.codes?.length ? ` — ${r.codes.join(", ")}` : ""}`);
     } catch (err) {
       this._toast(`Claim failed: ${err?.message || err}`);
+    } finally {
+      this._busy = null;
+      this._lastKey = null;
+      this._render();
+    }
+  }
+
+  _twoTap(key) {
+    if (this._confirming === key) {
+      clearTimeout(this._confirmTimer);
+      this._confirming = null;
+      return true;
+    }
+    this._confirming = key;
+    this._render();
+    clearTimeout(this._confirmTimer);
+    this._confirmTimer = setTimeout(() => {
+      this._confirming = null;
+      this._render();
+    }, 4000);
+    return false;
+  }
+
+  async _happy(action, code) {
+    if (!this._twoTap(`hh:${action}:${code}`)) return;
+    this._busy = `hh:${code}`;
+    this._render();
+    const ids = this._entities();
+    const attrs = this._hass.states[ids.happy]?.attributes || {};
+    try {
+      await this._hass.callWS({
+        type: "call_service",
+        domain: "octoplus",
+        service: action === "book" ? "book_happy_hour" : "cancel_happy_hour",
+        service_data: { event_code: code, config_entry_id: attrs.config_entry_id },
+      });
+      this._toast(action === "book" ? "Happy Hour booked" : "Happy Hour booking cancelled");
+    } catch (err) {
+      this._toast(`${action === "book" ? "Booking" : "Cancelling"} failed: ${err?.message || err}`);
     } finally {
       this._busy = null;
       this._lastKey = null;
@@ -182,6 +222,42 @@ class OctoplusCard extends HTMLElement {
       chips.push(chip("mdi:ticket-percent", label, canScratch ? ids.scratchBtn : null));
     }
 
+    const happy = st(ids.happy);
+    const fmtSlot = (sl) => {
+      const a = new Date(sl.start), b = new Date(sl.end);
+      const day = a.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
+      const t = (d) => d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+      return `${day} ${t(a)}–${t(b)}`;
+    };
+    const capLabel = { available: "Available", low: "Filling up", full: "" };
+    const happyRow = (sl) => {
+      const busy = this._busy === `hh:${sl.code}`;
+      const live = sl.status === "ongoing";
+      let btn;
+      if (busy) btn = `<button class="claim busy" disabled>…</button>`;
+      else if (sl.booked && !live)
+        btn = `<button class="claim ghost ${this._confirming === `hh:cancel:${sl.code}` ? "confirm" : ""}" data-hh-cancel="${esc(sl.code)}">${this._confirming === `hh:cancel:${sl.code}` ? "Cancel booking?" : "Cancel"}</button>`;
+      else if (sl.booked) btn = `<span class="reason">Free now</span>`;
+      else if (sl.capacity === "full" || sl.status !== "upcoming") btn = `<span class="reason">${sl.capacity === "full" ? "Full" : "Unavailable"}</span>`;
+      else
+        btn = `<button class="claim ${this._confirming === `hh:book:${sl.code}` ? "confirm" : ""}" data-hh-book="${esc(sl.code)}">${this._confirming === `hh:book:${sl.code}` ? "Confirm?" : "Book"}</button>`;
+      const sub = sl.booked ? (live ? "Booked · on now" : "Booked") : capLabel[sl.capacity] || "";
+      return `<div class="row ${!sl.booked && (sl.capacity === "full" || sl.status !== "upcoming") ? "dim" : ""}">
+        <div class="logo ph ${sl.booked ? "booked" : ""}"><ha-icon icon="${sl.booked ? "mdi:check-circle" : "mdi:party-popper"}"></ha-icon></div>
+        <div class="txt"><div class="name">${esc(fmtSlot(sl))}</div><div class="sub">${esc(sub)}</div></div>
+        ${btn}</div>`;
+    };
+    let happySection = "";
+    if (happy && happy.state !== "unavailable" && this._config.show_happy_hours !== false) {
+      const ha = happy.attributes || {};
+      const slots = ha.slots || [];
+      if (slots.length || ha.tokens) {
+        happySection = `<h3>Weekend Happy Hours · ${ha.tokens ?? 0} token${ha.tokens === 1 ? "" : "s"}</h3>${
+          slots.length ? slots.map(happyRow).join("") : `<div class="empty">No slots yet — usually announced on Thursdays.</div>`
+        }`;
+      }
+    }
+
     const offerRow = (o) => {
       const state = this._busy === o.slug ? "busy" : this._confirming === o.slug ? "confirm" : o.can_claim ? "ready" : "off";
       const btn =
@@ -234,6 +310,9 @@ class OctoplusCard extends HTMLElement {
         button.claim { flex: none; border: none; border-radius: 16px; padding: 6px 14px; cursor: pointer; font: inherit; font-size: 0.85em;
                        background: var(--primary-color); color: var(--text-primary-color); }
         button.claim.confirm { background: var(--warning-color, #ff9800); }
+        button.claim.ghost { background: transparent; color: var(--primary-color); border: 1px solid var(--primary-color); }
+        button.claim.ghost.confirm { background: var(--warning-color, #ff9800); color: var(--text-primary-color); border-color: transparent; }
+        .logo.ph.booked { color: var(--success-color, #4caf50); }
         button.claim.busy { opacity: .6; cursor: default; }
         .reason { flex: none; font-size: 0.8em; color: var(--secondary-text-color); }
         .codes { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; flex: none; }
@@ -245,6 +324,7 @@ class OctoplusCard extends HTMLElement {
       </style>
       <ha-card>
         <div class="head"><div class="title">${esc(this._config.title || "Octoplus")}</div><div class="chips">${chips.join("")}</div></div>
+        ${happySection}
         <h3>Offers (${offers.filter((o) => o.can_claim).length} claimable)</h3>
         ${offers.length
           ? (() => {
@@ -268,6 +348,8 @@ class OctoplusCard extends HTMLElement {
       </ha-card>`;
 
     this.shadowRoot.querySelectorAll("[data-claim]").forEach((b) => b.addEventListener("click", () => this._claim(b.dataset.claim)));
+    this.shadowRoot.querySelectorAll("[data-hh-book]").forEach((b) => b.addEventListener("click", () => this._happy("book", b.dataset.hhBook)));
+    this.shadowRoot.querySelectorAll("[data-hh-cancel]").forEach((b) => b.addEventListener("click", () => this._happy("cancel", b.dataset.hhCancel)));
     this.shadowRoot.querySelectorAll("[data-press]").forEach((b) => b.addEventListener("click", () => this._press(b.dataset.press)));
     this.shadowRoot.querySelectorAll("[data-copy]").forEach((b) =>
       b.addEventListener("click", async () => {
@@ -299,7 +381,7 @@ class OctoplusCardEditor extends HTMLElement {
     if (!this._form) {
       this._form = document.createElement("ha-form");
       this._form.computeLabel = (s) =>
-        ({ entity: "Account (its Offers sensor)", title: "Title", hide_unclaimable: "Hide offers you can't claim", show_rewards: "Show your rewards" })[s.name] || s.name;
+        ({ entity: "Account (its Offers sensor)", title: "Title", hide_unclaimable: "Hide offers you can't claim", show_rewards: "Show your rewards", show_happy_hours: "Show Weekend Happy Hours" })[s.name] || s.name;
       this._form.addEventListener("value-changed", (ev) => {
         const config = { ...ev.detail.value };
         for (const k of Object.keys(config)) if (config[k] === "" || config[k] === undefined) delete config[k];
@@ -314,8 +396,9 @@ class OctoplusCardEditor extends HTMLElement {
       { name: "title", selector: { text: {} } },
       { name: "hide_unclaimable", selector: { boolean: {} } },
       { name: "show_rewards", selector: { boolean: {} } },
+      { name: "show_happy_hours", selector: { boolean: {} } },
     ];
-    this._form.data = { hide_unclaimable: false, show_rewards: true, ...this._config };
+    this._form.data = { hide_unclaimable: false, show_rewards: true, show_happy_hours: true, ...this._config };
   }
 }
 

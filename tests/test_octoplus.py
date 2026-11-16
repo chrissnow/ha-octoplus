@@ -1,4 +1,5 @@
 import re
+from datetime import timedelta
 import pytest
 from homeassistant.exceptions import HomeAssistantError
 from pathlib import Path
@@ -15,7 +16,8 @@ HISTORY = [{"entryType": "CREDIT", "reason": "WHEEL", "value": 50, "balanceAfter
 
 @pytest.fixture(autouse=True)
 def _extras():
-    with patch.object(A.OctoplusApi, "spins", AsyncMock(return_value=SPINS)) as s, \
+    with patch.object(A.OctoplusApi, "happy_hours", AsyncMock(return_value={"account": {"hasJoinedCampaign": True, "tokenBalance": 0, "joinedEvents": []}, "events": []})), \
+         patch.object(A.OctoplusApi, "spins", AsyncMock(return_value=SPINS)) as s, \
          patch.object(A.OctoplusApi, "points_balance", AsyncMock(return_value=1234)), \
          patch.object(A.OctoplusApi, "points_history", AsyncMock(return_value=HISTORY)):
         yield s
@@ -24,7 +26,7 @@ def test_queries_valid():
     t = open(Path(__file__).parent / 'octopus-backend.graphql').read()
     t = t[re.search(r'^("""|schema|type|directive|scalar)', t, re.M).start():]
     s = build_schema(t)
-    for q in (A.Q_STATUS, A.M_SCRATCH, A.M_CLAIM, A.Q_POINTS_BALANCE, A.Q_POINTS_HISTORY, A.Q_SPINS, A.M_SPIN):
+    for q in (A.Q_STATUS, A.M_SCRATCH, A.M_CLAIM, A.Q_POINTS_BALANCE, A.Q_POINTS_HISTORY, A.Q_SPINS, A.M_SPIN, A.Q_HAPPY_HOURS, A.M_BOOK_HAPPY_HOUR, A.M_CANCEL_HAPPY_HOUR):
         assert validate(s, parse(q)) == []
 
 SESSION = {"externalReference": "11111111-1111-1111-1111-111111111111", "startsAt": "2026-11-16T00:00:00Z", "endsAt": "2026-11-23T00:00:00Z"}
@@ -237,3 +239,137 @@ async def test_card_resource_registration(hass: HomeAssistant):
          patch("homeassistant.components.frontend.add_extra_js_url") as add:
         await integ._async_register_card(hass)
     add.assert_called_once()
+
+
+
+def _hh(events, tokens=4, booked=()):
+    return {
+        "account": {"hasJoinedCampaign": True, "tokenBalance": tokens,
+                    "joinedEvents": [{"eventId": i, "startAt": "x", "endAt": "y", "eventStatus": "UPCOMING", "eventType": "WEEKEND_HAPPY_HOUR"} for i in booked]},
+        "events": events,
+    }
+
+
+def _ev(i, start, hours=1, cap="AVAILABLE", status="UPCOMING", etype="WEEKEND_HAPPY_HOUR"):
+    from homeassistant.util import dt as dt_util
+    s = dt_util.as_utc(start)
+    return {"id": i, "code": f"HH{i}", "startAt": s.isoformat(), "endAt": (s + timedelta(hours=hours)).isoformat(),
+            "status": status, "eventType": etype, "capacityStatus": cap}
+
+
+async def test_happy_hours_auto_book_in_window(hass: HomeAssistant):
+    from homeassistant.util import dt as dt_util
+    await hass.config.async_set_time_zone("Europe/London")
+    sunday = (dt_util.now() + timedelta(days=7)).replace(hour=0, minute=0, second=0, microsecond=0)
+    evs = [
+        _ev(1, sunday.replace(hour=9)),            # outside window
+        _ev(2, sunday.replace(hour=11), cap="FULL"),  # full
+        _ev(3, sunday.replace(hour=12)),           # pick this
+        _ev(4, sunday.replace(hour=13)),
+        _ev(9, sunday.replace(hour=18), etype="TURN_DOWN"),  # not a happy hour
+    ]
+    calls = []
+    hass.services.async_register("notify", "phone", lambda c: calls.append(c.data))
+    entry = MockConfigEntry(domain=DOMAIN, unique_id="B-1", data={"api_key": "k", "account_number": "B-1"},
+                            options={"notify_service": "notify.phone", "auto_book_happy_hour": True, "happy_hour_window_start": "10:30:00", "happy_hour_window_end": "15:00:00"})
+    entry.add_to_hass(hass)
+    hh = AsyncMock(side_effect=[_hh(evs), _hh(evs, tokens=2, booked=[3])])
+    with patch.object(A.OctoplusApi, "status", AsyncMock(return_value=status())), \
+         patch.object(A.OctoplusApi, "happy_hours", hh), \
+         patch.object(A.OctoplusApi, "book_happy_hour", AsyncMock(return_value={"eventId": 3})) as book:
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+    book.assert_awaited_once_with("HH3")
+    assert [c["title"] for c in calls] == ["Happy Hour auto-booked"]  # first run, but auto-bookings still notify
+    st = hass.states.get("sensor.octoplus_b_1_happy_hour")
+    assert st.attributes["event_code"] == "HH3"
+    assert [s["code"] for s in st.attributes["slots"]] == ["HH1", "HH2", "HH3", "HH4"]
+    assert hass.states.get("sensor.octoplus_b_1_happy_hour_tokens").state == "2"
+    assert hass.states.get("binary_sensor.octoplus_b_1_happy_hour_active").state == "off"
+    # booked -> back to normal polling
+    assert entry.runtime_data.update_interval == timedelta(minutes=60)
+
+
+async def test_happy_hours_no_auto_book_by_default_and_fast_poll_off(hass: HomeAssistant):
+    from homeassistant.util import dt as dt_util
+    start = dt_util.now() + timedelta(days=3)
+    entry = MockConfigEntry(domain=DOMAIN, unique_id="B-2", data={"api_key": "k", "account_number": "B-2"})
+    entry.add_to_hass(hass)
+    with patch.object(A.OctoplusApi, "status", AsyncMock(return_value=status())), \
+         patch.object(A.OctoplusApi, "happy_hours", AsyncMock(return_value=_hh([_ev(5, start)]))), \
+         patch.object(A.OctoplusApi, "book_happy_hour", AsyncMock()) as book:
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+    book.assert_not_awaited()
+    assert entry.runtime_data.update_interval == timedelta(minutes=60)
+    assert hass.states.get("sensor.octoplus_b_2_happy_hour").state == "unknown"
+
+
+async def test_happy_hours_fast_poll_while_waiting(hass: HomeAssistant):
+    from homeassistant.util import dt as dt_util
+    start = dt_util.now() + timedelta(days=3)
+    entry = MockConfigEntry(domain=DOMAIN, unique_id="B-3", data={"api_key": "k", "account_number": "B-3"},
+                            options={"auto_book_happy_hour": True, "happy_hour_window_start": "00:00:00", "happy_hour_window_end": "00:00:01"})
+    entry.add_to_hass(hass)
+    with patch.object(A.OctoplusApi, "status", AsyncMock(return_value=status())), \
+         patch.object(A.OctoplusApi, "happy_hours", AsyncMock(return_value=_hh([_ev(6, start)]))), \
+         patch.object(A.OctoplusApi, "book_happy_hour", AsyncMock()) as book:
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+    book.assert_not_awaited()  # nothing in window
+    assert entry.runtime_data.update_interval == timedelta(minutes=10)
+
+
+async def test_happy_hours_notifications_and_services(hass: HomeAssistant):
+    from homeassistant.util import dt as dt_util
+    calls = []
+    hass.services.async_register("notify", "phone", lambda c: calls.append(c.data))
+    start = dt_util.now() + timedelta(days=2)
+    entry = MockConfigEntry(domain=DOMAIN, unique_id="B-4", data={"api_key": "k", "account_number": "B-4"},
+                            options={"notify_service": "notify.phone"})
+    entry.add_to_hass(hass)
+    slots_ev = async_capture_events(hass, "octoplus_happy_hour_slots")
+    booked_ev = async_capture_events(hass, "octoplus_happy_hour_booked")
+    hh = AsyncMock(return_value=_hh([]))
+    with patch.object(A.OctoplusApi, "status", AsyncMock(return_value=status())), \
+         patch.object(A.OctoplusApi, "happy_hours", hh), \
+         patch.object(A.OctoplusApi, "book_happy_hour", AsyncMock(return_value={"eventId": 7})) as book, \
+         patch.object(A.OctoplusApi, "cancel_happy_hour", AsyncMock()) as cancel:
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        hh.return_value = _hh([_ev(7, start), _ev(8, start + timedelta(hours=1))])
+        await entry.runtime_data.async_refresh()
+        await hass.async_block_till_done()
+        assert slots_ev and len(slots_ev[0].data["slots"]) == 2
+        assert any(c["title"].startswith("Happy Hour slots announced") for c in calls)
+        hh.return_value = _hh([_ev(7, start), _ev(8, start + timedelta(hours=1))], booked=[7])
+        await hass.services.async_call("octoplus", "book_happy_hour", {"event_code": "HH7"}, blocking=True, return_response=True)
+        await hass.async_block_till_done()
+        book.assert_awaited_with("HH7")
+        assert booked_ev and booked_ev[0].data["slot"]["code"] == "HH7"
+        assert any(c["title"].startswith("Happy Hour booked") for c in calls)
+        await hass.services.async_call("octoplus", "cancel_happy_hour", {"event_code": "HH7"}, blocking=True)
+        cancel.assert_awaited_with("HH7")
+
+
+async def test_happy_hour_binary_sensor_flips_on_time(hass: HomeAssistant):
+    from homeassistant.util import dt as dt_util
+    from pytest_homeassistant_custom_component.common import async_fire_time_changed
+    now = dt_util.utcnow()
+    start = now + timedelta(minutes=5)
+    entry = MockConfigEntry(domain=DOMAIN, unique_id="B-5", data={"api_key": "k", "account_number": "B-5"})
+    entry.add_to_hass(hass)
+    with patch.object(A.OctoplusApi, "status", AsyncMock(return_value=status())), \
+         patch.object(A.OctoplusApi, "happy_hours", AsyncMock(return_value=_hh([_ev(11, start)], booked=[11]))):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        eid = "binary_sensor.octoplus_b_5_happy_hour_active"
+        assert hass.states.get(eid).state == "off"
+        with patch("homeassistant.util.dt.utcnow", return_value=start + timedelta(seconds=1)):
+            async_fire_time_changed(hass, start + timedelta(seconds=1))
+            await hass.async_block_till_done()
+            assert hass.states.get(eid).state == "on"
+        with patch("homeassistant.util.dt.utcnow", return_value=start + timedelta(hours=1, seconds=1)):
+            async_fire_time_changed(hass, start + timedelta(hours=1, seconds=1))
+            await hass.async_block_till_done()
+            assert hass.states.get(eid).state == "off"

@@ -93,6 +93,31 @@ mutation($acc: String!, $fuel: FuelType!) {
   }
 }"""
 
+Q_HAPPY_HOURS = """
+query($acc: String!) {
+  savingSessions {
+    account(accountNumber: $acc) {
+      hasJoinedCampaign tokenBalance
+      joinedEvents { eventId startAt endAt eventStatus eventType }
+    }
+    events { id code startAt endAt status eventType capacityStatus }
+  }
+}"""
+
+M_BOOK_HAPPY_HOUR = """
+mutation($acc: String!, $code: String!) {
+  bookSavingSessionsWeekendHappyHourEvent(input: {accountNumber: $acc, eventCode: $code}) {
+    bookedEvent { eventId startAt endAt }
+  }
+}"""
+
+M_CANCEL_HAPPY_HOUR = """
+mutation($acc: String!, $code: String!) {
+  cancelSavingSessionsWeekendHappyHourBooking(input: {accountNumber: $acc, eventCode: $code}) {
+    accountNumber
+  }
+}"""
+
 M_TOKEN = """
 mutation($k: String!) { obtainKrakenToken(input: {APIKey: $k}) { token } }"""
 
@@ -176,6 +201,16 @@ class OctoplusApi:
     async def spin(self, fuel: str) -> dict[str, Any]:
         d = await self.gql(M_SPIN, {"fuel": fuel})
         return d["spinWheelOfFortune"]
+
+    async def happy_hours(self) -> dict[str, Any]:
+        return (await self.gql(Q_HAPPY_HOURS))["savingSessions"]
+
+    async def book_happy_hour(self, code: str) -> dict[str, Any] | None:
+        d = await self.gql(M_BOOK_HAPPY_HOUR, {"code": code})
+        return (d.get("bookSavingSessionsWeekendHappyHourEvent") or {}).get("bookedEvent")
+
+    async def cancel_happy_hour(self, code: str) -> None:
+        await self.gql(M_CANCEL_HAPPY_HOUR, {"code": code})
 
     async def claim(self, slug: str) -> str | None:
         d = await self.gql(M_CLAIM, {"slug": slug})

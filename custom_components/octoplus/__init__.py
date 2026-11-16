@@ -15,12 +15,20 @@ from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.typing import ConfigType
 
 from .api import OctoplusError
-from .const import ATTR_CONFIG_ENTRY_ID, ATTR_OFFER_SLUG, DOMAIN, SERVICE_CLAIM_OFFER
+from .const import (
+    ATTR_CONFIG_ENTRY_ID,
+    ATTR_EVENT_CODE,
+    ATTR_OFFER_SLUG,
+    DOMAIN,
+    SERVICE_BOOK_HH,
+    SERVICE_CANCEL_HH,
+    SERVICE_CLAIM_OFFER,
+)
 from .coordinator import OctoplusCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = [Platform.SENSOR, Platform.BUTTON]
+PLATFORMS = [Platform.SENSOR, Platform.BUTTON, Platform.BINARY_SENSOR]
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 type OctoplusConfigEntry = ConfigEntry[OctoplusCoordinator]
@@ -99,10 +107,17 @@ async def _async_register_card(hass: HomeAssistant) -> None:
 
     add_extra_js_url(hass, url)
 
+HH_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_EVENT_CODE): cv.string,
+        vol.Optional(ATTR_CONFIG_ENTRY_ID): cv.string,
+    }
+)
+
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     await _async_register_card(hass)
-    async def _claim(call: ServiceCall) -> ServiceResponse:
+    def _coordinator(call: ServiceCall) -> OctoplusCoordinator:
         entries = [
             e for e in hass.config_entries.async_entries(DOMAIN)
             if e.state is ConfigEntryState.LOADED
@@ -113,15 +128,36 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
             raise ServiceValidationError(
                 "Specify config_entry_id" if entries else "No loaded Octoplus account"
             )
+        return entries[0].runtime_data
+
+    async def _claim(call: ServiceCall) -> ServiceResponse:
         try:
-            return await entries[0].runtime_data.async_claim_offer(call.data[ATTR_OFFER_SLUG])
+            return await _coordinator(call).async_claim_offer(call.data[ATTR_OFFER_SLUG])
         except OctoplusError as err:
             raise HomeAssistantError(f"Claim failed: {err}") from err
+
+    async def _book(call: ServiceCall) -> ServiceResponse:
+        try:
+            res = await _coordinator(call).async_book_happy_hour(call.data[ATTR_EVENT_CODE])
+        except OctoplusError as err:
+            raise HomeAssistantError(f"Booking failed: {err}") from err
+        return {"booked": res}
+
+    async def _cancel(call: ServiceCall) -> None:
+        try:
+            await _coordinator(call).async_cancel_happy_hour(call.data[ATTR_EVENT_CODE])
+        except OctoplusError as err:
+            raise HomeAssistantError(f"Cancelling failed: {err}") from err
 
     hass.services.async_register(
         DOMAIN, SERVICE_CLAIM_OFFER, _claim, schema=CLAIM_SCHEMA,
         supports_response=SupportsResponse.OPTIONAL,
     )
+    hass.services.async_register(
+        DOMAIN, SERVICE_BOOK_HH, _book, schema=HH_SCHEMA,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(DOMAIN, SERVICE_CANCEL_HH, _cancel, schema=HH_SCHEMA)
     return True
 
 

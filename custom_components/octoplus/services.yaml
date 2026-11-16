@@ -10,3 +10,27 @@ claim_offer:
       selector:
         config_entry:
           integration: octoplus
+
+book_happy_hour:
+  fields:
+    event_code:
+      required: true
+      selector:
+        text:
+    config_entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: octoplus
+
+cancel_happy_hour:
+  fields:
+    event_code:
+      required: true
+      selector:
+        text:
+    config_entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: octoplus

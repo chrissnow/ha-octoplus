@@ -10,18 +10,25 @@ from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResu
 from homeassistant.const import CONF_API_KEY
 from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.selector import TimeSelector
 
 from .api import OctoplusApi, OctoplusAuthError, OctoplusError
 from .const import (
     CONF_ACCOUNT,
+    CONF_AUTO_BOOK_HH,
     CONF_AUTO_CLAIM,
     CONF_AUTO_SCRATCH,
     CONF_AUTO_SPIN,
+    CONF_HH_WINDOW_END,
+    CONF_HH_WINDOW_START,
     CONF_NOTIFY,
     CONF_SCAN_MINUTES,
+    DEFAULT_AUTO_BOOK_HH,
     DEFAULT_AUTO_CLAIM,
     DEFAULT_AUTO_SCRATCH,
     DEFAULT_AUTO_SPIN,
+    DEFAULT_HH_WINDOW_END,
+    DEFAULT_HH_WINDOW_START,
     DEFAULT_SCAN_MINUTES,
     DOMAIN,
 )
@@ -113,6 +120,17 @@ class OctoplusOptionsFlow(OptionsFlow):
                     vol.Optional(
                         CONF_AUTO_SPIN, default=o.get(CONF_AUTO_SPIN, DEFAULT_AUTO_SPIN)
                     ): bool,
+                    vol.Optional(
+                        CONF_AUTO_BOOK_HH, default=o.get(CONF_AUTO_BOOK_HH, DEFAULT_AUTO_BOOK_HH)
+                    ): bool,
+                    vol.Optional(
+                        CONF_HH_WINDOW_START,
+                        default=o.get(CONF_HH_WINDOW_START, DEFAULT_HH_WINDOW_START),
+                    ): TimeSelector(),
+                    vol.Optional(
+                        CONF_HH_WINDOW_END,
+                        default=o.get(CONF_HH_WINDOW_END, DEFAULT_HH_WINDOW_END),
+                    ): TimeSelector(),
                     vol.Optional(
                         CONF_SCAN_MINUTES, default=o.get(CONF_SCAN_MINUTES, DEFAULT_SCAN_MINUTES)
                     ): vol.All(vol.Coerce(int), vol.Range(min=15, max=1440)),

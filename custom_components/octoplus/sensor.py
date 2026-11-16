@@ -6,6 +6,7 @@ from typing import Any
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.util import dt as dt_util
 
 from . import OctoplusConfigEntry
 from .const import SCRATCH_STATES
@@ -28,6 +29,8 @@ async def async_setup_entry(
             StampsSensor(c, "stamps"),
             OctopointsSensor(c, "octopoints"),
             WheelSpinsSensor(c, "wheel_spins"),
+            HappyHourTokensSensor(c, "happy_hour_tokens"),
+            HappyHourSensor(c, "happy_hour"),
         ]
     )
 
@@ -233,4 +236,52 @@ class WheelSpinsSensor(OctoplusEntity, SensorEntity):
             "electricity": (sp.get("electricity") or {}).get("spinsAllowed"),
             "gas": (sp.get("gas") or {}).get("spinsAllowed"),
             "prize_type": (sp.get("wheelOfFortunePrizeType") or "").lower() or None,
+        }
+
+
+class HappyHourTokensSensor(OctoplusEntity, SensorEntity):
+    """Weekend Happy Hour tokens."""
+
+    _attr_icon = "mdi:ticket"
+    _attr_native_unit_of_measurement = "tokens"
+
+    @property
+    def available(self) -> bool:
+        return super().available and self.coordinator.data.get("happy_hours") is not None
+
+    @property
+    def native_value(self) -> int | None:
+        return (self.coordinator.data.get("happy_hours") or {}).get("tokens")
+
+
+class HappyHourSensor(OctoplusEntity, SensorEntity):
+    """Start of the next booked Weekend Happy Hour; slots listed as attributes."""
+
+    _attr_icon = "mdi:party-popper"
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+
+    @property
+    def available(self) -> bool:
+        return super().available and self.coordinator.data.get("happy_hours") is not None
+
+    def _next_booked(self) -> dict | None:
+        hh = self.coordinator.data.get("happy_hours") or {}
+        return next((sl for sl in hh.get("slots", []) if sl["booked"]), None)
+
+    @property
+    def native_value(self):
+        sl = self._next_booked()
+        return dt_util.parse_datetime(sl["start"]) if sl else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        hh = self.coordinator.data.get("happy_hours") or {}
+        sl = self._next_booked() or {}
+        return {
+            "end": sl.get("end"),
+            "event_code": sl.get("code"),
+            "tokens": hh.get("tokens"),
+            "joined_campaign": hh.get("joined_campaign"),
+            "config_entry_id": self.coordinator.config_entry.entry_id,
+            "slots": hh.get("slots", []),
         }

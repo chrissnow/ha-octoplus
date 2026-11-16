@@ -1,13 +1,14 @@
 """Coordinator: polls Octoplus, auto-scratches/claims, fires events."""
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import time, timedelta
 import logging
 from typing import Any
 
-from homeassistant.config_entries import ConfigEntry
+from homeassistant.config_entries import ConfigEntry, ConfigEntryState
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
@@ -16,16 +17,24 @@ from homeassistant.util import dt as dt_util
 from .api import OctoplusApi, OctoplusAuthError, OctoplusError
 from .const import (
     CONF_ACCOUNT,
+    CONF_AUTO_BOOK_HH,
     CONF_AUTO_CLAIM,
     CONF_AUTO_SCRATCH,
     CONF_AUTO_SPIN,
+    CONF_HH_WINDOW_END,
+    CONF_HH_WINDOW_START,
     CONF_NOTIFY,
     CONF_SCAN_MINUTES,
+    DEFAULT_AUTO_BOOK_HH,
     DEFAULT_AUTO_CLAIM,
     DEFAULT_AUTO_SCRATCH,
     DEFAULT_AUTO_SPIN,
+    DEFAULT_HH_WINDOW_END,
+    DEFAULT_HH_WINDOW_START,
     DEFAULT_SCAN_MINUTES,
     DOMAIN,
+    EVENT_HH_BOOKED,
+    EVENT_HH_SLOTS,
     EVENT_NEW_OFFER,
     EVENT_NEW_REWARD,
     EVENT_OFFER_CLAIMED,
@@ -33,10 +42,26 @@ from .const import (
     EVENT_SCRATCHCARD,
     EVENT_STAMPCARD_COMPLETE,
     EVENT_WHEEL_SPUN,
+    HH_FAST_POLL_MINUTES,
 )
 
 _LOGGER = logging.getLogger(__name__)
 STORE_VERSION = 1
+
+
+def _parse_time(value: str | None, default: str) -> time:
+    for v in (value, default):
+        try:
+            return time.fromisoformat(v)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            continue
+    return time(0, 0)
+
+
+def _fmt_slot(sl: dict) -> str:
+    start = dt_util.as_local(dt_util.parse_datetime(sl["start"]))
+    end = dt_util.as_local(dt_util.parse_datetime(sl["end"]))
+    return f"{start:%a %-d %b %H:%M}–{end:%H:%M}"
 
 
 def describe_offer(o: dict | None) -> str:
@@ -68,16 +93,37 @@ class OctoplusCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.auto_claim = opts.get(CONF_AUTO_CLAIM, DEFAULT_AUTO_CLAIM)
         self.auto_spin = opts.get(CONF_AUTO_SPIN, DEFAULT_AUTO_SPIN)
         self.notify_service: str = (opts.get(CONF_NOTIFY) or "").strip()
+        self.auto_book_hh = opts.get(CONF_AUTO_BOOK_HH, DEFAULT_AUTO_BOOK_HH)
+        self.hh_window = (
+            _parse_time(opts.get(CONF_HH_WINDOW_START), DEFAULT_HH_WINDOW_START),
+            _parse_time(opts.get(CONF_HH_WINDOW_END), DEFAULT_HH_WINDOW_END),
+        )
+        self._normal_interval = self.update_interval
         self._store: Store = Store(hass, STORE_VERSION, f"{DOMAIN}.{self.account}")
         self._seen: dict[str, list] | None = None
         self._extra_errors: dict[str, str] = {}
         self._unsupported: set[str] = set()
+        self._auto_booked: set[int] = set()
 
     # ------------------------------------------------------------ helpers
+
+    @property
+    def label(self) -> str:
+        """Friendly name for this account: the device's user-set name, else the account number."""
+        dev = dr.async_get(self.hass).async_get_device(identifiers={(DOMAIN, self.account)})
+        if dev and dev.name_by_user:
+            return dev.name_by_user.removeprefix("Octoplus ").strip() or self.account
+        return self.account
 
     async def _notify(self, title: str, message: str) -> None:
         if not self.notify_service:
             return
+        loaded = [
+            e for e in self.hass.config_entries.async_entries(DOMAIN)
+            if e.state is ConfigEntryState.LOADED
+        ]
+        if len(loaded) > 1:
+            title = f"{title} · {self.label}"
         svc = self.notify_service.removeprefix("notify.")
         try:
             await self.hass.services.async_call(
@@ -223,6 +269,94 @@ class OctoplusCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             await self.async_request_refresh()
         return res
 
+    # ------------------------------------------------------------ happy hours
+
+    async def _fetch_happy_hours(self) -> dict[str, Any] | None:
+        if "happy hours" in self._unsupported:
+            return None
+        try:
+            raw = await self.api.happy_hours()
+            self._extra_errors.pop("happy hours", None)
+        except OctoplusError as err:
+            self._extra_failed("happy hours", err)
+            return None
+        now = dt_util.utcnow()
+        acct = raw.get("account") or {}
+        booked = {
+            e["eventId"]
+            for e in acct.get("joinedEvents") or []
+            if e.get("eventType") == "WEEKEND_HAPPY_HOUR"
+        }
+        slots = []
+        for ev in raw.get("events") or []:
+            if ev.get("eventType") != "WEEKEND_HAPPY_HOUR":
+                continue
+            end = dt_util.parse_datetime(ev["endAt"])
+            if end is None or end <= now:
+                continue
+            slots.append(
+                {
+                    "id": ev["id"],
+                    "code": ev["code"],
+                    "start": ev["startAt"],
+                    "end": ev["endAt"],
+                    "status": (ev.get("status") or "").lower(),
+                    "capacity": (ev.get("capacityStatus") or "").lower() or None,
+                    "booked": ev["id"] in booked,
+                }
+            )
+        slots.sort(key=lambda x: x["start"])
+        return {
+            "joined_campaign": acct.get("hasJoinedCampaign"),
+            "tokens": acct.get("tokenBalance"),
+            "slots": slots,
+        }
+
+    def _in_window(self, slot: dict) -> bool:
+        start = dt_util.as_local(dt_util.parse_datetime(slot["start"]))
+        end = dt_util.as_local(dt_util.parse_datetime(slot["end"]))
+        w_start, w_end = self.hh_window
+        return start.time() >= w_start and (end - timedelta(seconds=1)).time() <= w_end
+
+    async def async_book_happy_hour(self, code: str, *, refresh: bool = True) -> dict | None:
+        res = await self.api.book_happy_hour(code)
+        if refresh:
+            await self.async_refresh()
+        return res
+
+    async def async_cancel_happy_hour(self, code: str) -> None:
+        await self.api.cancel_happy_hour(code)
+        await self.async_refresh()
+
+    async def _auto_book(self, hh: dict[str, Any]) -> bool:
+        """Book the earliest bookable slot in the window if none is booked yet."""
+        if any(sl["booked"] for sl in hh["slots"]) or not hh.get("tokens"):
+            return False
+        for sl in hh["slots"]:
+            if sl["status"] != "upcoming" or sl["capacity"] == "full" or not self._in_window(sl):
+                continue
+            try:
+                await self.async_book_happy_hour(sl["code"], refresh=False)
+                self._auto_booked.add(sl["id"])
+                return True
+            except OctoplusError as err:
+                _LOGGER.info("Auto-booking Happy Hour %s failed: %s", sl["code"], err)
+        return False
+
+    def _adjust_interval(self, hh: dict[str, Any] | None) -> None:
+        """Poll faster while auto-booking is waiting for (or racing for) a slot."""
+        fast = False
+        if self.auto_book_hh and hh and hh.get("tokens"):
+            if not any(sl["booked"] for sl in hh["slots"]):
+                # slots are usually announced on Thursdays for the weekend
+                weekday = dt_util.now().weekday()
+                fast = bool(hh["slots"]) or weekday in (3, 4, 5)
+        self.update_interval = (
+            timedelta(minutes=HH_FAST_POLL_MINUTES)
+            if fast and self._normal_interval > timedelta(minutes=HH_FAST_POLL_MINUTES)
+            else self._normal_interval
+        )
+
     # ------------------------------------------------------------ update
 
     async def _async_update_data(self) -> dict[str, Any]:
@@ -272,6 +406,11 @@ class OctoplusCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if spun:
                 spins = await self._fetch_spins()
         points, points_history = await self._fetch_points()
+
+        hh = await self._fetch_happy_hours()
+        if hh and self.auto_book_hh and await self._auto_book(hh):
+            hh = await self._fetch_happy_hours() or hh
+        self._adjust_interval(hh)
 
         # ---- diff rewards / offers / stampcards (silent on first ever run)
         rewards = [r for r in (data.get("octoplusRewards") or []) if r]
@@ -326,6 +465,32 @@ class OctoplusCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         "A stampcard is ready to exchange in the Octopus app.",
                     )
 
+        seen.setdefault("hh_slots", [])
+        seen.setdefault("hh_booked", [])
+        if hh:
+            new_slots = [sl for sl in hh["slots"] if sl["id"] not in seen["hh_slots"]]
+            for sl in new_slots:
+                seen["hh_slots"].append(sl["id"])
+            if new_slots and not first_run:
+                self._fire(EVENT_HH_SLOTS, {"slots": new_slots, "tokens": hh.get("tokens")})
+                await self._notify(
+                    "Happy Hour slots announced",
+                    ", ".join(_fmt_slot(sl) for sl in new_slots)
+                    + f". You have {hh.get('tokens') or 0} token(s)."
+                    + (" Auto-booking is on." if self.auto_book_hh else ""),
+                )
+            for sl in hh["slots"]:
+                if sl["booked"] and sl["id"] not in seen["hh_booked"]:
+                    seen["hh_booked"].append(sl["id"])
+                    auto = sl["id"] in self._auto_booked
+                    if auto or not first_run:
+                        self._fire(EVENT_HH_BOOKED, {"slot": sl, "auto": auto})
+                        await self._notify(
+                            "Happy Hour auto-booked" if auto else "Happy Hour booked",
+                            f"Free electricity {_fmt_slot(sl)}.",
+                        )
+            self._auto_booked.clear()
+
         # keep the store bounded
         for k in seen:
             seen[k] = seen[k][-500:]
@@ -346,6 +511,7 @@ class OctoplusCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return {
             "scratch": data["octoplusActiveScratchcardData"],
             "spins": spins,
+            "happy_hours": hh,
             "points": points,
             "points_history": points_history,
             "rewards": rewards,

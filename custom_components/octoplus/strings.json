@@ -38,10 +38,14 @@
           "auto_claim": "Claim scratchcard prizes automatically",
           "scan_interval_minutes": "Check every (minutes)",
           "notify_service": "Notify service (optional)",
-          "auto_spin": "Spin the wheel of fortune automatically"
+          "auto_spin": "Spin the wheel of fortune automatically",
+          "auto_book_happy_hour": "Book Weekend Happy Hours automatically",
+          "happy_hour_window_start": "Auto-book: earliest start",
+          "happy_hour_window_end": "Auto-book: latest end"
         },
         "data_description": {
-          "notify_service": "e.g. notify.mobile_app_chris_phone. Leave blank to use the octoplus_* events in your own automations instead."
+          "notify_service": "e.g. notify.mobile_app_chris_phone. Leave blank to use the octoplus_* events in your own automations instead.",
+          "auto_book_happy_hour": "Books the earliest available slot inside the time window once slots are announced (usually Thursdays), if you have tokens. Checks every 10 minutes until booked."
         }
       }
     }
@@ -77,6 +81,12 @@
       },
       "wheel_spins": {
         "name": "Wheel spins"
+      },
+      "happy_hour_tokens": {
+        "name": "Happy Hour tokens"
+      },
+      "happy_hour": {
+        "name": "Happy Hour"
       }
     },
     "button": {
@@ -85,6 +95,11 @@
       },
       "spin": {
         "name": "Spin wheel"
+      }
+    },
+    "binary_sensor": {
+      "happy_hour_active": {
+        "name": "Happy Hour active"
       }
     }
   },
@@ -96,6 +111,34 @@
         "offer_slug": {
           "name": "Offer slug",
           "description": "The offer's slug (offer_slug attribute on its Claim button)."
+        },
+        "config_entry_id": {
+          "name": "Account",
+          "description": "Only needed if you have more than one Octoplus account."
+        }
+      }
+    },
+    "book_happy_hour": {
+      "name": "Book Happy Hour",
+      "description": "Book a Weekend Happy Hour slot using your tokens.",
+      "fields": {
+        "event_code": {
+          "name": "Event code",
+          "description": "The slot's event_code (see the Happy Hour sensor's slots attribute)."
+        },
+        "config_entry_id": {
+          "name": "Account",
+          "description": "Only needed if you have more than one Octoplus account."
+        }
+      }
+    },
+    "cancel_happy_hour": {
+      "name": "Cancel Happy Hour",
+      "description": "Cancel a Weekend Happy Hour booking.",
+      "fields": {
+        "event_code": {
+          "name": "Event code",
+          "description": "The slot's event_code (see the Happy Hour sensor's slots attribute)."
         },
         "config_entry_id": {
           "name": "Account",
