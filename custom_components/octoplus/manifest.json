@@ -1,13 +1,15 @@
 {
   "domain": "octoplus",
   "name": "Octoplus",
-  "codeowners": [],
+  "codeowners": [
+    "@chrissnow"
+  ],
   "config_flow": true,
   "documentation": "https://github.com/chrissnow/ha-octoplus",
   "integration_type": "service",
   "iot_class": "cloud_polling",
   "requirements": [],
-  "version": "0.3.0",
+  "version": "0.3.1",
   "after_dependencies": [
     "frontend",
     "http"

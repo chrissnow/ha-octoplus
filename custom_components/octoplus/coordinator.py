@@ -71,6 +71,7 @@ class OctoplusCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._store: Store = Store(hass, STORE_VERSION, f"{DOMAIN}.{self.account}")
         self._seen: dict[str, list] | None = None
         self._extra_errors: dict[str, str] = {}
+        self._unsupported: set[str] = set()
 
     # ------------------------------------------------------------ helpers
 
@@ -164,6 +165,10 @@ class OctoplusCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _extra_failed(self, what: str, err: Exception) -> None:
         """Log an optional-query failure once per distinct error."""
         msg = str(err)
+        if "OE-0001" in msg:  # "feature not configured for this territory"
+            self._unsupported.add(what)
+            _LOGGER.debug("Octoplus %s not available for %s; not querying again", what, self.account)
+            return
         if self._extra_errors.get(what) != msg:
             self._extra_errors[what] = msg
             _LOGGER.warning("Octoplus %s query failed for %s: %s", what, self.account, msg)
@@ -184,11 +189,12 @@ class OctoplusCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._extra_errors.pop("points balance", None)
         except OctoplusError as err:
             self._extra_failed("points balance", err)
-        try:
-            history = await self.api.points_history()
-            self._extra_errors.pop("points history", None)
-        except OctoplusError as err:
-            self._extra_failed("points history", err)
+        if "points history" not in self._unsupported:
+            try:
+                history = await self.api.points_history()
+                self._extra_errors.pop("points history", None)
+            except OctoplusError as err:
+                self._extra_failed("points history", err)
         if balance is None and history:
             balance = history[0].get("balanceAfter")
         return balance, history

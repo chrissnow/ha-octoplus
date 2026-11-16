@@ -173,3 +173,18 @@ async def test_points_fall_back_to_history(hass: HomeAssistant):
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
     assert hass.states.get("sensor.octoplus_a_8_octopoints").state == "1234"
+
+
+async def test_unsupported_history_not_retried(hass: HomeAssistant):
+    entry = MockConfigEntry(domain=DOMAIN, unique_id="A-9", data={"api_key": "k", "account_number": "A-9"})
+    entry.add_to_hass(hass)
+    with patch.object(A.OctoplusApi, "status", AsyncMock(return_value=status())), \
+         patch.object(A.OctoplusApi, "points_history", AsyncMock(side_effect=A.OctoplusError("OE-0001 territory"))) as h:
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        await entry.runtime_data.async_refresh()
+    assert h.await_count == 1
+    assert hass.states.get("sensor.octoplus_a_9_octopoints").state == "1234"
+    from homeassistant.helpers import device_registry as dr
+    dev = dr.async_get(hass).async_get_device(identifiers={(DOMAIN, "A-9")})
+    assert dev.manufacturer == "Chris Snow"

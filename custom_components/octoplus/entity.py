@@ -18,7 +18,7 @@ class OctoplusEntity(CoordinatorEntity[OctoplusCoordinator]):
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, coordinator.account)},
             name=f"Octoplus {coordinator.account}",
-            manufacturer="Octopus Energy",
+            manufacturer="Chris Snow",
             model="Octoplus",
             entry_type=DeviceEntryType.SERVICE,
         )
