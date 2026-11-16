@@ -70,6 +70,7 @@ class OctoplusCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.notify_service: str = (opts.get(CONF_NOTIFY) or "").strip()
         self._store: Store = Store(hass, STORE_VERSION, f"{DOMAIN}.{self.account}")
         self._seen: dict[str, list] | None = None
+        self._extra_errors: dict[str, str] = {}
 
     # ------------------------------------------------------------ helpers
 
@@ -160,19 +161,37 @@ class OctoplusCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         return result
 
+    def _extra_failed(self, what: str, err: Exception) -> None:
+        """Log an optional-query failure once per distinct error."""
+        msg = str(err)
+        if self._extra_errors.get(what) != msg:
+            self._extra_errors[what] = msg
+            _LOGGER.warning("Octoplus %s query failed for %s: %s", what, self.account, msg)
+
     async def _fetch_spins(self) -> dict[str, Any] | None:
         try:
-            return await self.api.spins()
-        except OctoplusError as err:  # e.g. account without that fuel
-            _LOGGER.debug("Wheel of fortune query failed: %s", err)
-            return None
-
-    async def _fetch_points(self) -> dict[str, Any] | None:
-        try:
-            return await self.api.points()
+            res = await self.api.spins()
         except OctoplusError as err:
-            _LOGGER.debug("Loyalty points query failed: %s", err)
+            self._extra_failed("wheel of fortune", err)
             return None
+        self._extra_errors.pop("wheel of fortune", None)
+        return res
+
+    async def _fetch_points(self) -> tuple[int | None, list[dict[str, Any]]]:
+        balance, history = None, []
+        try:
+            balance = await self.api.points_balance()
+            self._extra_errors.pop("points balance", None)
+        except OctoplusError as err:
+            self._extra_failed("points balance", err)
+        try:
+            history = await self.api.points_history()
+            self._extra_errors.pop("points history", None)
+        except OctoplusError as err:
+            self._extra_failed("points history", err)
+        if balance is None and history:
+            balance = history[0].get("balanceAfter")
+        return balance, history
 
     async def async_spin(self, fuel: str | None = None, *, from_button: bool = False) -> dict:
         """Spin the wheel once using a fuel type with spins left."""
@@ -246,7 +265,7 @@ class OctoplusCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         break
             if spun:
                 spins = await self._fetch_spins()
-        points = await self._fetch_points()
+        points, points_history = await self._fetch_points()
 
         # ---- diff rewards / offers / stampcards (silent on first ever run)
         rewards = [r for r in (data.get("octoplusRewards") or []) if r]
@@ -309,10 +328,8 @@ class OctoplusCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return {
             "scratch": data["octoplusActiveScratchcardData"],
             "spins": spins,
-            "points": (points or {}).get("loyaltyPointsBalance", {}).get("balance") if points else None,
-            "points_history": [
-                e["node"] for e in ((points or {}).get("loyaltyPointsHistory") or {}).get("edges", [])
-            ],
+            "points": points,
+            "points_history": points_history,
             "rewards": rewards,
             "active_rewards": [r for r in rewards if _usable(r)],
             "offers": offers,

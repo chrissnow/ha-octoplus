@@ -5,7 +5,8 @@ Custom integration for Octopus Energy's **Octoplus** rewards scheme:
 - Scratches the weekly scratchcard automatically (or via a **Scratch now** button)
 - Claims scratchcard prizes automatically (optional)
 - Notifies about scratch results, new rewards (with voucher codes), new offers and completed stampcards
-- A **Claim** button for every available offer, plus an `octoplus.claim_offer` action
+- An **Octoplus card** (bundled, no other cards needed): offers with Claim buttons, active rewards with codes, points, spins and scratchcard
+- An `octoplus.claim_offer` action for automations
 - Octopoints balance, and wheel-of-fortune spins (auto-spin optional)
 - Fires events for your own automations
 
@@ -27,13 +28,25 @@ Copy `custom_components/octoplus` to `/config/custom_components/` (or add this r
 
 - `sensor.*_scratchcard`: `no_session`, `not_scratched`, `did_not_win`, `prize_not_yet_claimed`, `prize_claimed`, `prize_rejected`, `prize_not_claimed_in_time`
 - `sensor.*_rewards`: count; `recent` attribute with names, statuses and voucher codes
-- `sensor.*_offers`: count; `offers` attribute
+- `sensor.*_offers`: count; `offers` attribute (name, partner, logo, claim_by, can_claim, reason)
 - `sensor.*_stamps`: stamps on the current stampcard; `exchangeable_cards`
 - `sensor.*_active_rewards`: rewards whose vouchers haven't expired; `rewards` attribute with codes
 - `sensor.*_octopoints`: points balance; `recent` ledger entries
 - `sensor.*_wheel_spins`: spins available (electricity + gas)
 - `button.*_scratch_now`, `button.*_spin_wheel`
-- `button.octoplus_claim_<offer>`: one per available offer, added/removed as offers change; attributes `partner`, `claim_by`, `can_claim`, `cannot_claim_reason`
+
+## Card
+
+The integration serves the card itself, so it's available on every dashboard after a restart:
+
+```yaml
+type: custom:octoplus-card
+# entity: sensor.octoplus_a_1234abcd_offers   # optional, auto-detected
+# hide_unclaimable: true
+# show_rewards: false
+```
+
+Claiming takes two taps (Claim → Confirm?). Unclaimable offers are greyed out with the reason.
 
 ## Actions
 

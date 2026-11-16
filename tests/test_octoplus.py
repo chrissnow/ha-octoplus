@@ -11,23 +11,24 @@ from custom_components.octoplus import api as A
 from custom_components.octoplus.const import DOMAIN
 
 SPINS = {"electricity": {"spinsAllowed": 2, "maxSpins": 5}, "gas": {"spinsAllowed": 0, "maxSpins": 5}, "wheelOfFortunePrizeType": "LOYALTY_POINTS"}
-POINTS = {"loyaltyPointsBalance": {"balance": 1234}, "loyaltyPointsHistory": {"edges": [{"node": {"entryType": "CREDIT", "reason": "WHEEL", "value": 50, "balanceAfter": 1234, "postedAt": "2026-11-16T10:00:00Z", "note": None}}]}}
+HISTORY = [{"entryType": "CREDIT", "reason": "WHEEL", "value": 50, "balanceAfter": 1234, "postedAt": "2026-11-16T10:00:00Z", "note": None}]
 
 @pytest.fixture(autouse=True)
 def _extras():
     with patch.object(A.OctoplusApi, "spins", AsyncMock(return_value=SPINS)) as s, \
-         patch.object(A.OctoplusApi, "points", AsyncMock(return_value=POINTS)):
+         patch.object(A.OctoplusApi, "points_balance", AsyncMock(return_value=1234)), \
+         patch.object(A.OctoplusApi, "points_history", AsyncMock(return_value=HISTORY)):
         yield s
 
 def test_queries_valid():
     t = open(Path(__file__).parent / 'octopus-backend.graphql').read()
     t = t[re.search(r'^("""|schema|type|directive|scalar)', t, re.M).start():]
     s = build_schema(t)
-    for q in (A.Q_STATUS, A.M_SCRATCH, A.M_CLAIM, A.Q_POINTS, A.Q_SPINS, A.M_SPIN):
+    for q in (A.Q_STATUS, A.M_SCRATCH, A.M_CLAIM, A.Q_POINTS_BALANCE, A.Q_POINTS_HISTORY, A.Q_SPINS, A.M_SPIN):
         assert validate(s, parse(q)) == []
 
 SESSION = {"externalReference": "11111111-1111-1111-1111-111111111111", "startsAt": "2026-11-16T00:00:00Z", "endsAt": "2026-11-23T00:00:00Z"}
-OFFER = {"slug": "free-coffee", "name": "Free coffee", "description": "d", "partnerName": "Caffe Nero", "priceTag": "£3", "claimBy": None, "claimAbility": {"canClaimOffer": True, "cannotClaimReason": None}}
+OFFER = {"slug": "free-coffee", "name": "Free coffee", "description": "d", "pointsCost": 0, "imageUrls": {"logo": "https://x/l.png"}, "partnerName": "Caffe Nero", "priceTag": "£3", "claimBy": None, "claimAbility": {"canClaimOffer": True, "cannotClaimReason": None}}
 OFFER2 = {**OFFER, "slug": "zoo", "name": "Zoo 2 for 1", "claimAbility": {"canClaimOffer": False, "cannotClaimReason": "OUT_OF_STOCK"}}
 def status(scratch=None, rewards=(), offers=(OFFER,)):
     return {
@@ -89,9 +90,12 @@ async def test_defaults_off_no_scratch(hass: HomeAssistant):
     assert hass.states.get("button.octoplus_a_2_scratch_now").state != "unavailable"
 
 
-async def test_claim_buttons_service_and_removal(hass: HomeAssistant):
+async def test_offers_attrs_service_and_old_button_cleanup(hass: HomeAssistant):
+    from homeassistant.helpers import entity_registry as er
     entry = MockConfigEntry(domain=DOMAIN, unique_id="A-3", data={"api_key": "k", "account_number": "A-3"})
     entry.add_to_hass(hass)
+    reg = er.async_get(hass)
+    reg.async_get_or_create("button", DOMAIN, "A-3_claim_old-offer", config_entry=entry)
     reward = {"id": 7, "status": "ISSUED", "claimedAt": "2026-11-16T10:00:00Z", "claimedOffer": {"slug": "free-coffee", "name": "Free coffee", "partnerName": "Caffe Nero"}, "vouchers": [{"code": "XYZ", "expiresAt": "2099-01-01T00:00:00+00:00"}]}
     old = {**reward, "id": 6, "vouchers": [{"code": "OLD", "expiresAt": "2020-01-01T00:00:00+00:00"}]}
     st = AsyncMock(return_value=status(offers=(OFFER, OFFER2), rewards=[old]))
@@ -100,28 +104,19 @@ async def test_claim_buttons_service_and_removal(hass: HomeAssistant):
          patch.object(A.OctoplusApi, "claim", AsyncMock(return_value="7")) as cl:
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
-        b = hass.states.get("button.octoplus_a_3_claim_free_coffee")
-        z = hass.states.get("button.octoplus_a_3_claim_zoo")
-        assert b and b.state != "unavailable" and b.attributes["partner"] == "Caffe Nero"
-        assert z.attributes["can_claim"] is False and z.attributes["cannot_claim_reason"] == "out_of_stock"
-        with pytest.raises(HomeAssistantError, match="out of stock"):
-            await hass.services.async_call("button", "press", {"entity_id": "button.octoplus_a_3_claim_zoo"}, blocking=True)
+        assert not [e for e in er.async_entries_for_config_entry(reg, entry.entry_id) if "_claim_" in e.unique_id]
+        attrs = hass.states.get("sensor.octoplus_a_3_offers").attributes
+        assert attrs["config_entry_id"] == entry.entry_id
+        by = {o["slug"]: o for o in attrs["offers"]}
+        assert by["free-coffee"]["can_claim"] is True and by["free-coffee"]["partner"] == "Caffe Nero"
+        assert by["zoo"]["can_claim"] is False and by["zoo"]["reason"] == "Out of stock"
         assert hass.states.get("sensor.octoplus_a_3_active_rewards").state == "0"
-        # press -> claim, refresh shows the new reward
         st.return_value = status(offers=(OFFER, OFFER2), rewards=[old, reward])
-        await hass.services.async_call("button", "press", {"entity_id": "button.octoplus_a_3_claim_free_coffee"}, blocking=True)
-        cl.assert_awaited_with("free-coffee")
-        assert claimed[-1].data["codes"] == ["XYZ"]
-        assert hass.states.get("sensor.octoplus_a_3_active_rewards").state == "1"
-        # service with response
         resp = await hass.services.async_call("octoplus", "claim_offer", {"offer_slug": "free-coffee", "config_entry_id": entry.entry_id}, blocking=True, return_response=True)
+        cl.assert_awaited_with("free-coffee")
         assert resp["codes"] == ["XYZ"] and resp["reward_id"] == "7"
-        # offer disappears -> its button is removed
-        st.return_value = status(offers=(OFFER,), rewards=[old, reward])
-        await entry.runtime_data.async_refresh()
-        await hass.async_block_till_done()
-    assert hass.states.get("button.octoplus_a_3_claim_zoo") is None
-    assert hass.states.get("button.octoplus_a_3_claim_free_coffee") is not None
+        assert claimed[-1].data["codes"] == ["XYZ"]
+        assert hass.states.get("sensor.octoplus_a_3_active_rewards").attributes["rewards"][0]["codes"] == ["XYZ"]
 
 
 async def test_points_and_auto_spin(hass: HomeAssistant, _extras):
@@ -145,7 +140,8 @@ async def test_extras_failure_does_not_break(hass: HomeAssistant):
     entry.add_to_hass(hass)
     with patch.object(A.OctoplusApi, "status", AsyncMock(return_value=status())), \
          patch.object(A.OctoplusApi, "spins", AsyncMock(side_effect=A.OctoplusError("nope"))), \
-         patch.object(A.OctoplusApi, "points", AsyncMock(side_effect=A.OctoplusError("nope"))):
+         patch.object(A.OctoplusApi, "points_balance", AsyncMock(side_effect=A.OctoplusError("nope"))), \
+         patch.object(A.OctoplusApi, "points_history", AsyncMock(side_effect=A.OctoplusError("nope"))):
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
     assert hass.states.get("sensor.octoplus_a_5_octopoints").state == "unavailable"
@@ -160,11 +156,20 @@ async def test_two_accounts(hass: HomeAssistant):
          patch.object(A.OctoplusApi, "claim", AsyncMock(return_value="1")) as cl:
         assert await hass.config_entries.async_setup(e1.entry_id)
         await hass.async_block_till_done()
-        assert hass.states.get("button.octoplus_a_6_claim_free_coffee")
-        assert hass.states.get("button.octoplus_a_7_claim_free_coffee")
+        assert hass.states.get("sensor.octoplus_a_6_offers") and hass.states.get("sensor.octoplus_a_7_offers")
         assert hass.states.get("sensor.octoplus_a_7_octopoints").state == "1234"
         with pytest.raises(Exception, match="config_entry_id"):
             await hass.services.async_call("octoplus", "claim_offer", {"offer_slug": "free-coffee"}, blocking=True, return_response=True)
         await hass.services.async_call("octoplus", "claim_offer", {"offer_slug": "free-coffee", "config_entry_id": e2.entry_id}, blocking=True, return_response=True)
         assert cl.await_count == 1
     assert e1.runtime_data.api.account == "A-6" and e2.runtime_data.api.account == "A-7"
+
+
+async def test_points_fall_back_to_history(hass: HomeAssistant):
+    entry = MockConfigEntry(domain=DOMAIN, unique_id="A-8", data={"api_key": "k", "account_number": "A-8"})
+    entry.add_to_hass(hass)
+    with patch.object(A.OctoplusApi, "status", AsyncMock(return_value=status())), \
+         patch.object(A.OctoplusApi, "points_balance", AsyncMock(side_effect=A.OctoplusError("denied"))):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+    assert hass.states.get("sensor.octoplus_a_8_octopoints").state == "1234"

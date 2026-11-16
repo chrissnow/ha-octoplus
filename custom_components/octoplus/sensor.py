@@ -111,6 +111,17 @@ class ActiveRewardsSensor(OctoplusEntity, SensorEntity):
         return {"rewards": [_reward_summary(r) for r in self.coordinator.data["active_rewards"]]}
 
 
+REASONS = {
+    "OUT_OF_STOCK": "Out of stock",
+    "MAX_CLAIMS_PER_PERIOD_REACHED": "Already claimed",
+    "INSUFFICIENT_POINTS": "Not enough points",
+    "NO_ACTIVE_SCRATCHCARD_SESSION": "Scratchcard prize",
+    "HAS_NOT_WON_OFFER": "Scratchcard prize",
+    "NO_VALID_SCRATCHCARD_FOUND": "Scratchcard prize",
+    "NO_EXCHANGEABLE_STAMPCARD": "Needs a full stampcard",
+}
+
+
 class OffersSensor(OctoplusEntity, SensorEntity):
     _attr_icon = "mdi:tag-multiple"
     _attr_native_unit_of_measurement = "offers"
@@ -121,16 +132,28 @@ class OffersSensor(OctoplusEntity, SensorEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        return {
-            "offers": [
+        offers = []
+        for o in self.coordinator.data["offers"][:40]:
+            ability = o.get("claimAbility") or {}
+            reason = ability.get("cannotClaimReason")
+            offers.append(
                 {
-                    "name": describe_offer(o),
                     "slug": o["slug"],
+                    "name": o.get("name"),
+                    "partner": o.get("partnerName"),
+                    "description": (o.get("description") or "")[:200],
                     "claim_by": o.get("claimBy"),
-                    "can_claim": (o.get("claimAbility") or {}).get("canClaimOffer"),
+                    "points_cost": o.get("pointsCost") or 0,
+                    "logo": (o.get("imageUrls") or {}).get("logo"),
+                    "can_claim": ability.get("canClaimOffer") is not False,
+                    "reason": REASONS.get(reason, reason.replace("_", " ").capitalize())
+                    if reason else None,
                 }
-                for o in self.coordinator.data["offers"][:25]
-            ]
+            )
+        return {
+            "account_number": self.coordinator.account,
+            "config_entry_id": self.coordinator.config_entry.entry_id,
+            "offers": offers,
         }
 
 

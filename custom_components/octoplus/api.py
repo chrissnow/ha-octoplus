@@ -11,8 +11,8 @@ from .const import BACKEND_API, PUBLIC_API
 TOKEN_LIFETIME = 50 * 60  # Kraken JWTs last ~60 min; refresh a bit early
 
 OFFER_FIELDS = (
-    "slug name description partnerName priceTag claimBy "
-    "claimAbility { canClaimOffer cannotClaimReason }"
+    "slug name description partnerName priceTag claimBy pointsCost "
+    "imageUrls { logo } claimAbility { canClaimOffer cannotClaimReason }"
 )
 
 Q_STATUS = f"""
@@ -62,9 +62,11 @@ mutation($acc: String!, $slug: String!) {
   claimOctoplusReward(accountNumber: $acc, offerSlug: $slug) { rewardId }
 }"""
 
-Q_POINTS = """
+Q_POINTS_BALANCE = """
+query($acc: String!) { loyaltyPointsBalance(accountNumber: $acc) { balance } }"""
+
+Q_POINTS_HISTORY = """
 query($acc: String!) {
-  loyaltyPointsBalance(accountNumber: $acc) { balance }
   loyaltyPointsHistory(accountNumber: $acc, first: 10) {
     edges { node { entryType reason value balanceAfter postedAt note } }
   }
@@ -157,8 +159,13 @@ class OctoplusApi:
         d = await self.gql(M_SCRATCH, {"sess": session_ref})
         return d["scratchOctoplusScratchcard"]["scratchcard"]
 
-    async def points(self) -> dict[str, Any]:
-        return await self.gql(Q_POINTS)
+    async def points_balance(self) -> int | None:
+        d = await self.gql(Q_POINTS_BALANCE)
+        return (d.get("loyaltyPointsBalance") or {}).get("balance")
+
+    async def points_history(self) -> list[dict[str, Any]]:
+        d = await self.gql(Q_POINTS_HISTORY)
+        return [e["node"] for e in (d.get("loyaltyPointsHistory") or {}).get("edges", [])]
 
     async def spins(self) -> dict[str, Any]:
         return await self.gql(Q_SPINS)
