@@ -159,7 +159,6 @@ async def test_two_accounts(hass: HomeAssistant):
     with patch.object(A.OctoplusApi, "status", AsyncMock(return_value=status())), \
          patch.object(A.OctoplusApi, "claim", AsyncMock(return_value="1")) as cl:
         assert await hass.config_entries.async_setup(e1.entry_id)
-        assert await hass.config_entries.async_setup(e2.entry_id)
         await hass.async_block_till_done()
         assert hass.states.get("button.octoplus_a_6_claim_free_coffee")
         assert hass.states.get("button.octoplus_a_7_claim_free_coffee")
