@@ -247,13 +247,22 @@ class OctoplusCard extends HTMLElement {
         <div class="head"><div class="title">${esc(this._config.title || "Octoplus")}</div><div class="chips">${chips.join("")}</div></div>
         <h3>Offers (${offers.filter((o) => o.can_claim).length} claimable)</h3>
         ${offers.length
-          ? order
-              .map((k) => {
-                const title = groupTitle(groupMeta.get(k));
-                const rows = grouped.get(k).sort(byClaimable).map(offerRow).join("");
-                return `<div class="group">${title ? `<div class="gtitle">${esc(title)}</div>` : ""}${rows}</div>`;
-              })
-              .join("")
+          ? (() => {
+              // Multi-offer groups get their own titled block; single-offer groups
+              // (whose title would just repeat the offer) are pooled together.
+              const blocks = [];
+              const singles = [];
+              for (const k of order) {
+                const list = grouped.get(k);
+                const all = (offerAttrs.offers || []).filter((o) => (o.group_id ?? "none") === k).length;
+                if (all > 1 && k !== "none") blocks.push({ title: groupTitle(groupMeta.get(k)), list });
+                else singles.push(...list);
+              }
+              if (singles.length) blocks.push({ title: blocks.length ? "More offers" : "", list: singles });
+              return blocks
+                .map((b) => `<div class="group">${b.title ? `<div class="gtitle">${esc(b.title)}</div>` : ""}${b.list.sort(byClaimable).map(offerRow).join("")}</div>`)
+                .join("");
+            })()
           : `<div class="empty">No offers right now.</div>`}
         ${this._config.show_rewards ? `<h3>Your rewards</h3>${rewards.length ? rewards.map(rewardRow).join("") : `<div class="empty">No active rewards.</div>`}` : ""}
       </ha-card>`;
