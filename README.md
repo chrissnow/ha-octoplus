@@ -46,7 +46,7 @@ type: custom:octoplus-card
 # show_rewards: false
 ```
 
-Claiming takes two taps (Claim → Confirm?). Unclaimable offers are greyed out with the reason.
+The card has a visual editor (account, title, options). Claiming takes two taps (Claim → Confirm?). Unclaimable offers are greyed out with the reason.
 
 ## Actions
 

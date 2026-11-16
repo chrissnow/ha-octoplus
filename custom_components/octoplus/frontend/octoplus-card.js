@@ -14,9 +14,11 @@ const fmtDate = (iso) => {
   if (!iso) return "";
   const d = new Date(iso);
   if (isNaN(d)) return "";
-  const days = Math.ceil((d - Date.now()) / 86400000);
+  const startOfDay = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const days = Math.round((startOfDay(d) - startOfDay(new Date())) / 86400000);
   const label = d.toLocaleDateString(undefined, { day: "numeric", month: "short" });
-  if (days <= 0) return "today";
+  if (days < 0) return "ended";
+  if (days === 0) return "today";
   if (days === 1) return "tomorrow";
   if (days <= 6) return `${label} (${days}d)`;
   return label;
@@ -29,7 +31,7 @@ class OctoplusCard extends HTMLElement {
   }
 
   static getConfigElement() {
-    return undefined;
+    return document.createElement("octoplus-card-editor");
   }
 
   setConfig(config) {
@@ -74,6 +76,7 @@ class OctoplusCard extends HTMLElement {
         if (e.device_id === dev && e.platform === "octoplus" && e.translation_key) byKey[e.translation_key] = id;
       }
     }
+    if (byKey.offers) offers = byKey.offers;
     const prefix = offers.replace(/_offers$/, "");
     const pick = (tk, domain, suffix) => byKey[tk] || `${domain}.${prefix.split(".")[1]}_${suffix}`;
     return {
@@ -243,6 +246,45 @@ class OctoplusCard extends HTMLElement {
     );
   }
 }
+
+class OctoplusCardEditor extends HTMLElement {
+  setConfig(config) {
+    this._config = { ...config };
+    this._render();
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    if (this._form) this._form.hass = hass;
+    else this._render();
+  }
+
+  _render() {
+    if (!this._hass || !this._config) return;
+    if (!this._form) {
+      this._form = document.createElement("ha-form");
+      this._form.computeLabel = (s) =>
+        ({ entity: "Account (its Offers sensor)", title: "Title", hide_unclaimable: "Hide offers you can't claim", show_rewards: "Show your rewards" })[s.name] || s.name;
+      this._form.addEventListener("value-changed", (ev) => {
+        const config = { ...ev.detail.value };
+        for (const k of Object.keys(config)) if (config[k] === "" || config[k] === undefined) delete config[k];
+        this._config = config;
+        this.dispatchEvent(new CustomEvent("config-changed", { detail: { config }, bubbles: true, composed: true }));
+      });
+      this.appendChild(this._form);
+    }
+    this._form.hass = this._hass;
+    this._form.schema = [
+      { name: "entity", selector: { entity: { filter: { integration: "octoplus", domain: "sensor" } } } },
+      { name: "title", selector: { text: {} } },
+      { name: "hide_unclaimable", selector: { boolean: {} } },
+      { name: "show_rewards", selector: { boolean: {} } },
+    ];
+    this._form.data = { hide_unclaimable: false, show_rewards: true, ...this._config };
+  }
+}
+
+if (!customElements.get("octoplus-card-editor")) customElements.define("octoplus-card-editor", OctoplusCardEditor);
 
 if (!customElements.get("octoplus-card")) {
   customElements.define("octoplus-card", OctoplusCard);
