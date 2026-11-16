@@ -8,8 +8,8 @@ CONF_AUTO_CLAIM = "auto_claim"
 CONF_SCAN_MINUTES = "scan_interval_minutes"
 CONF_NOTIFY = "notify_service"
 
-DEFAULT_AUTO_SCRATCH = True
-DEFAULT_AUTO_CLAIM = True
+DEFAULT_AUTO_SCRATCH = False
+DEFAULT_AUTO_CLAIM = False
 DEFAULT_SCAN_MINUTES = 60
 
 PUBLIC_API = "https://api.octopus.energy/v1/graphql/"

@@ -36,7 +36,7 @@ async def test_setup_scratch_claim(hass: HomeAssistant):
     calls = []
     hass.services.async_register("notify", "phone", lambda c: calls.append(c.data))
     entry = MockConfigEntry(domain=DOMAIN, unique_id="A-1", data={"api_key": "k", "account_number": "A-1"},
-                            options={"notify_service": "notify.phone"})
+                            options={"notify_service": "notify.phone", "auto_scratch": True, "auto_claim": True})
     entry.add_to_hass(hass)
     ev = async_capture_events(hass, "octoplus_scratchcard")
     rew = async_capture_events(hass, "octoplus_new_reward")
@@ -63,3 +63,15 @@ async def test_setup_scratch_claim(hass: HomeAssistant):
     assert any("ABC123" in c["message"] for c in calls)
     assert hass.states.get("sensor.octoplus_a_1_rewards").state == "1"
     assert hass.states.get("sensor.octoplus_a_1_scratchcard").state == "prize_claimed"
+
+async def test_defaults_off_no_scratch(hass: HomeAssistant):
+    entry = MockConfigEntry(domain=DOMAIN, unique_id="A-2", data={"api_key": "k", "account_number": "A-2"})
+    entry.add_to_hass(hass)
+    with patch.object(A.OctoplusApi, "status", AsyncMock(return_value=status())), \
+         patch.object(A.OctoplusApi, "scratch", AsyncMock()) as sc, \
+         patch.object(A.OctoplusApi, "claim", AsyncMock()) as cl:
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+    sc.assert_not_awaited(); cl.assert_not_awaited()
+    assert hass.states.get("sensor.octoplus_a_2_scratchcard").state == "not_scratched"
+    assert hass.states.get("button.octoplus_a_2_scratch_now").state != "unavailable"

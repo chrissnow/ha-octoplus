@@ -15,8 +15,8 @@ Copy `custom_components/octoplus` to `/config/custom_components/` (or add this r
 
 | Option | Default |
 |---|---|
-| Scratch automatically | on |
-| Claim prizes automatically | on |
+| Scratch automatically | off |
+| Claim prizes automatically | off |
 | Check every (minutes) | 60 |
 | Notify service | blank (e.g. `notify.mobile_app_phone`) |
 
