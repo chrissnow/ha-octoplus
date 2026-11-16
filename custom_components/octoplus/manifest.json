@@ -3,7 +3,7 @@
   "name": "Octoplus",
   "codeowners": [],
   "config_flow": true,
-  "documentation": "https://github.com/chrissnow/ha-octoplus",
+  "documentation": "https://github.com/chrissnow/OctoBackend",
   "integration_type": "service",
   "iot_class": "cloud_polling",
   "requirements": [],
