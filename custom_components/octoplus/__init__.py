@@ -1,6 +1,7 @@
 """Octoplus integration: auto-scratch, claim and notify for Octopus Energy Octoplus."""
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import voluptuous as vol
@@ -11,7 +12,6 @@ from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse, Supp
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.typing import ConfigType
-from homeassistant.loader import async_get_integration
 
 from .api import OctoplusError
 from .const import ATTR_CONFIG_ENTRY_ID, ATTR_OFFER_SLUG, DOMAIN, SERVICE_CLAIM_OFFER
@@ -41,11 +41,14 @@ async def _async_register_card(hass: HomeAssistant) -> None:
     from homeassistant.components.http import StaticPathConfig
 
     path = Path(__file__).parent / "frontend" / "octoplus-card.js"
+    # Cache aggressively; the content hash in the URL busts the cache on any change.
     await hass.http.async_register_static_paths(
-        [StaticPathConfig(CARD_URL, str(path), cache_headers=False)]
+        [StaticPathConfig(CARD_URL, str(path), cache_headers=True)]
     )
-    version = (await async_get_integration(hass, DOMAIN)).version
-    add_extra_js_url(hass, f"{CARD_URL}?v={version}")
+    digest = await hass.async_add_executor_job(
+        lambda: hashlib.sha256(path.read_bytes()).hexdigest()[:10]
+    )
+    add_extra_js_url(hass, f"{CARD_URL}?v={digest}")
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
