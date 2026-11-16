@@ -1,0 +1,130 @@
+"""Minimal async client for the Octopus Kraken GraphQL APIs (Octoplus parts)."""
+from __future__ import annotations
+
+import time
+from typing import Any
+
+import aiohttp
+
+from .const import BACKEND_API, PUBLIC_API
+
+TOKEN_LIFETIME = 50 * 60  # Kraken JWTs last ~60 min; refresh a bit early
+
+OFFER_FIELDS = "slug name partnerName priceTag claimBy"
+
+Q_STATUS = f"""
+query($acc: String!) {{
+  isOctoplusEnrolled(accountNumber: $acc) {{ isEnrolled }}
+  octoplusActiveScratchcardData(accountNumber: $acc) {{
+    activeSession {{ externalReference startsAt endsAt }}
+    scratchcard {{
+      externalReference status
+      offer {{ {OFFER_FIELDS} }}
+    }}
+  }}
+  octoplusRewards(accountNumber: $acc) {{
+    id status claimedAt
+    claimedOffer {{ slug name partnerName }}
+    vouchers {{
+      ... on OctoplusVoucherType {{ code expiresAt }}
+      ... on ShoptopusVoucherType {{ code }}
+    }}
+  }}
+  octoplusOfferGroups(accountNumber: $acc, first: 50) {{
+    edges {{ node {{ name octoplusOffers {{ {OFFER_FIELDS} }} }} }}
+  }}
+  octoplusStampcards(accountNumber: $acc, first: 10) {{
+    edges {{ node {{ externalReference status totalStamps startedAt expiresAt }} }}
+  }}
+}}"""
+
+M_SCRATCH = f"""
+mutation($acc: String!, $sess: UUID!) {{
+  scratchOctoplusScratchcard(input: {{accountNumber: $acc,
+                                     scratchcardSessionExternalReference: $sess}}) {{
+    scratchcard {{
+      externalReference status
+      offer {{ {OFFER_FIELDS} }}
+      prize {{
+        __typename
+        ... on OctoplusOfferType {{ {OFFER_FIELDS} }}
+        ... on StampsAwardedType {{ totalStampsAwarded }}
+      }}
+    }}
+  }}
+}}"""
+
+M_CLAIM = """
+mutation($acc: String!, $slug: String!) {
+  claimOctoplusReward(accountNumber: $acc, offerSlug: $slug) { rewardId }
+}"""
+
+M_TOKEN = """
+mutation($k: String!) { obtainKrakenToken(input: {APIKey: $k}) { token } }"""
+
+
+class OctoplusError(Exception):
+    """Generic API error."""
+
+
+class OctoplusAuthError(OctoplusError):
+    """API key rejected."""
+
+
+class OctoplusApi:
+    def __init__(self, session: aiohttp.ClientSession, api_key: str, account: str):
+        self._session = session
+        self._api_key = api_key
+        self.account = account
+        self._token: str | None = None
+        self._token_at = 0.0
+
+    async def _post(self, url: str, query: str, variables: dict, token: str | None):
+        headers = {"Content-Type": "application/json"}
+        if token:
+            headers["Authorization"] = token
+        async with self._session.post(
+            url,
+            json={"query": query, "variables": variables},
+            headers=headers,
+            timeout=aiohttp.ClientTimeout(total=30),
+        ) as resp:
+            if resp.status >= 500:
+                raise OctoplusError(f"HTTP {resp.status}")
+            data = await resp.json(content_type=None)
+        if data.get("errors"):
+            raise OctoplusError(str(data["errors"])[:500])
+        return data["data"]
+
+    async def _token_valid(self) -> str:
+        if self._token and time.monotonic() - self._token_at < TOKEN_LIFETIME:
+            return self._token
+        try:
+            data = await self._post(PUBLIC_API, M_TOKEN, {"k": self._api_key}, None)
+        except OctoplusError as err:
+            raise OctoplusAuthError(str(err)) from err
+        self._token = data["obtainKrakenToken"]["token"]
+        self._token_at = time.monotonic()
+        return self._token
+
+    async def gql(self, query: str, variables: dict | None = None) -> dict[str, Any]:
+        variables = {"acc": self.account, **(variables or {})}
+        token = await self._token_valid()
+        try:
+            return await self._post(BACKEND_API, query, variables, token)
+        except OctoplusError as err:
+            if "JWT" not in str(err) and "KT-CT-11" not in str(err):
+                raise
+            self._token = None  # expired/invalid token: retry once
+            return await self._post(BACKEND_API, query, variables, await self._token_valid())
+
+    async def status(self) -> dict[str, Any]:
+        return await self.gql(Q_STATUS)
+
+    async def scratch(self, session_ref: str) -> dict[str, Any]:
+        d = await self.gql(M_SCRATCH, {"sess": session_ref})
+        return d["scratchOctoplusScratchcard"]["scratchcard"]
+
+    async def claim(self, slug: str) -> str | None:
+        d = await self.gql(M_CLAIM, {"slug": slug})
+        return d["claimOctoplusReward"]["rewardId"]

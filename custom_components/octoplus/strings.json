@@ -1,0 +1,68 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Octoplus",
+        "data": {
+          "api_key": "Octopus API key",
+          "account_number": "Account number"
+        },
+        "data_description": {
+          "api_key": "From your Octopus dashboard: Personal details → API access (sk_live_…)",
+          "account_number": "e.g. A-1234ABCD"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Re-enter Octopus API key",
+        "data": { "api_key": "Octopus API key" }
+      }
+    },
+    "error": {
+      "invalid_auth": "API key was rejected.",
+      "cannot_connect": "Could not reach the Octopus API.",
+      "not_enrolled": "This account is not enrolled in Octoplus."
+    },
+    "abort": {
+      "already_configured": "This account is already set up.",
+      "reauth_successful": "API key updated."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Octoplus options",
+        "data": {
+          "auto_scratch": "Scratch the scratchcard automatically",
+          "auto_claim": "Claim scratchcard prizes automatically",
+          "scan_interval_minutes": "Check every (minutes)",
+          "notify_service": "Notify service (optional)"
+        },
+        "data_description": {
+          "notify_service": "e.g. notify.mobile_app_chris_phone. Leave blank to use the octoplus_* events in your own automations instead."
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "scratchcard": {
+        "name": "Scratchcard",
+        "state": {
+          "no_session": "No session",
+          "not_scratched": "Not scratched",
+          "did_not_win": "No win",
+          "prize_not_yet_claimed": "Prize to claim",
+          "prize_claimed": "Prize claimed",
+          "prize_rejected": "Prize rejected",
+          "prize_not_claimed_in_time": "Prize expired"
+        }
+      },
+      "rewards": { "name": "Rewards" },
+      "offers": { "name": "Offers" },
+      "stamps": { "name": "Stamps" }
+    },
+    "button": {
+      "scratch": { "name": "Scratch now" }
+    }
+  }
+}
