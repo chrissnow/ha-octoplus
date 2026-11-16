@@ -34,7 +34,10 @@ query($acc: String!) {{
     }}
   }}
   octoplusOfferGroups(accountNumber: $acc, first: 50) {{
-    edges {{ node {{ name octoplusOffers {{ {OFFER_FIELDS} }} }} }}
+    edges {{ node {{
+      id name groupType category {{ name }}
+      octoplusOffers {{ {OFFER_FIELDS} }}
+    }} }}
   }}
   octoplusStampcards(accountNumber: $acc, first: 10) {{
     edges {{ node {{ externalReference status totalStamps startedAt expiresAt }} }}

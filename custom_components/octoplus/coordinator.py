@@ -275,11 +275,23 @@ class OctoplusCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         # ---- diff rewards / offers / stampcards (silent on first ever run)
         rewards = [r for r in (data.get("octoplusRewards") or []) if r]
-        offers = [
-            o
-            for e in (data.get("octoplusOfferGroups") or {}).get("edges", [])
-            for o in ((e or {}).get("node") or {}).get("octoplusOffers", [])
-        ]
+        offers: list[dict[str, Any]] = []
+        groups: list[dict[str, Any]] = []
+        slugs_seen: set[str] = set()
+        for e in (data.get("octoplusOfferGroups") or {}).get("edges", []):
+            node = (e or {}).get("node") or {}
+            group = {
+                "id": node.get("id"),
+                "name": node.get("name"),
+                "type": node.get("groupType"),
+                "category": (node.get("category") or {}).get("name"),
+            }
+            groups.append(group)
+            for o in node.get("octoplusOffers", []):
+                if o["slug"] in slugs_seen:
+                    continue
+                slugs_seen.add(o["slug"])
+                offers.append({**o, "group": group})
         stampcards = [e["node"] for e in data["octoplusStampcards"]["edges"]]
 
         for r in rewards:
@@ -339,5 +351,6 @@ class OctoplusCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "rewards": rewards,
             "active_rewards": [r for r in rewards if _usable(r)],
             "offers": offers,
+            "offer_groups": groups,
             "stampcards": stampcards,
         }

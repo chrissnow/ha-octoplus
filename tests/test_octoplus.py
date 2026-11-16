@@ -35,7 +35,7 @@ def status(scratch=None, rewards=(), offers=(OFFER,)):
         "isOctoplusEnrolled": {"isEnrolled": True},
         "octoplusActiveScratchcardData": {"activeSession": SESSION, "scratchcard": scratch},
         "octoplusRewards": list(rewards),
-        "octoplusOfferGroups": {"edges": [{"node": {"name": "Weekly", "octoplusOffers": list(offers)}}]},
+        "octoplusOfferGroups": {"edges": [{"node": {"id": 1, "name": "Weekly", "groupType": "STANDARD", "category": {"name": "Food"}, "octoplusOffers": list(offers)}}, {"node": {"id": 2, "name": "Dup", "groupType": "X", "category": {"name": None}, "octoplusOffers": [OFFER]}}]},
         "octoplusStampcards": {"edges": [{"node": {"externalReference": "x", "status": "INCOMPLETE", "totalStamps": 3, "startedAt": "2026-11-01T00:00:00Z", "expiresAt": None}}]},
     }
 
@@ -110,6 +110,8 @@ async def test_offers_attrs_service_and_old_button_cleanup(hass: HomeAssistant):
         by = {o["slug"]: o for o in attrs["offers"]}
         assert by["free-coffee"]["can_claim"] is True and by["free-coffee"]["partner"] == "Caffe Nero"
         assert by["zoo"]["can_claim"] is False and by["zoo"]["reason"] == "Out of stock"
+        assert by["free-coffee"]["group_id"] == 1 and len(attrs["offers"]) == 2  # deduped across groups
+        assert attrs["groups"][0] == {"id": 1, "name": "Weekly", "type": "STANDARD", "category": "Food"}
         assert hass.states.get("sensor.octoplus_a_3_active_rewards").state == "0"
         st.return_value = status(offers=(OFFER, OFFER2), rewards=[old, reward])
         resp = await hass.services.async_call("octoplus", "claim_offer", {"offer_slug": "free-coffee", "config_entry_id": entry.entry_id}, blocking=True, return_response=True)

@@ -148,11 +148,13 @@ class OffersSensor(OctoplusEntity, SensorEntity):
                     "can_claim": ability.get("canClaimOffer") is not False,
                     "reason": REASONS.get(reason, reason.replace("_", " ").capitalize())
                     if reason else None,
+                    "group_id": (o.get("group") or {}).get("id"),
                 }
             )
         return {
             "account_number": self.coordinator.account,
             "config_entry_id": self.coordinator.config_entry.entry_id,
+            "groups": self.coordinator.data.get("offer_groups", []),
             "offers": offers,
         }
 

@@ -143,8 +143,24 @@ class OctoplusCard extends HTMLElement {
       return;
     }
     const st = (id) => hass.states[id];
-    const offers = (st(ids.offers)?.attributes.offers || []).filter((o) => !(this._config.hide_unclaimable && !o.can_claim));
-    offers.sort((a, b) => (b.can_claim - a.can_claim) || String(a.claim_by || "9").localeCompare(String(b.claim_by || "9")));
+    const offerAttrs = st(ids.offers)?.attributes || {};
+    const offers = (offerAttrs.offers || []).filter((o) => !(this._config.hide_unclaimable && !o.can_claim));
+    const byClaimable = (a, b) => (b.can_claim - a.can_claim) || String(a.claim_by || "9").localeCompare(String(b.claim_by || "9"));
+    // Group offers as Octopus groups them; groups keep the API's order.
+    const groupMeta = new Map((offerAttrs.groups || []).map((g) => [g.id, g]));
+    const grouped = new Map();
+    for (const o of offers) {
+      const key = o.group_id ?? "none";
+      if (!grouped.has(key)) grouped.set(key, []);
+      grouped.get(key).push(o);
+    }
+    const order = [...(offerAttrs.groups || []).map((g) => g.id), "none"].filter((k) => grouped.has(k));
+    for (const k of grouped.keys()) if (!order.includes(k)) order.push(k);
+    const groupTitle = (g) => {
+      const n = (g?.name || "").trim();
+      if (!n || /^(offers?|default|all|general|octoplus( offers?)?)$/i.test(n) || /^[A-Z0-9_]+$/.test(n)) return "";
+      return n;
+    };
     const rewards = st(ids.rewards)?.attributes.rewards || [];
     const points = st(ids.points);
     const spins = st(ids.spins);
@@ -223,12 +239,22 @@ class OctoplusCard extends HTMLElement {
         .codes { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; flex: none; }
         .code { font-family: var(--code-font-family, monospace); font-size: 0.85em; cursor: pointer; --mdc-icon-size: 14px; }
         .code.link { font-family: inherit; color: var(--primary-color); text-decoration: none; }
+        .group + .group { border-top: 1px solid var(--divider-color); margin-top: 4px; padding-top: 4px; }
+        .gtitle { padding: 6px 16px 2px; font-weight: 500; font-size: 0.95em; }
         .empty { padding: 8px 16px; color: var(--secondary-text-color); font-size: 0.9em; }
       </style>
       <ha-card>
         <div class="head"><div class="title">${esc(this._config.title || "Octoplus")}</div><div class="chips">${chips.join("")}</div></div>
         <h3>Offers (${offers.filter((o) => o.can_claim).length} claimable)</h3>
-        ${offers.length ? offers.map(offerRow).join("") : `<div class="empty">No offers right now.</div>`}
+        ${offers.length
+          ? order
+              .map((k) => {
+                const title = groupTitle(groupMeta.get(k));
+                const rows = grouped.get(k).sort(byClaimable).map(offerRow).join("");
+                return `<div class="group">${title ? `<div class="gtitle">${esc(title)}</div>` : ""}${rows}</div>`;
+              })
+              .join("")
+          : `<div class="empty">No offers right now.</div>`}
         ${this._config.show_rewards ? `<h3>Your rewards</h3>${rewards.length ? rewards.map(rewardRow).join("") : `<div class="empty">No active rewards.</div>`}` : ""}
       </ha-card>`;
 
