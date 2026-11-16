@@ -100,28 +100,28 @@ async def test_claim_buttons_service_and_removal(hass: HomeAssistant):
          patch.object(A.OctoplusApi, "claim", AsyncMock(return_value="7")) as cl:
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
-        b = hass.states.get("button.octoplus_claim_free_coffee")
-        z = hass.states.get("button.octoplus_claim_zoo")
+        b = hass.states.get("button.octoplus_a_3_claim_free_coffee")
+        z = hass.states.get("button.octoplus_a_3_claim_zoo")
         assert b and b.state != "unavailable" and b.attributes["partner"] == "Caffe Nero"
         assert z.attributes["can_claim"] is False and z.attributes["cannot_claim_reason"] == "out_of_stock"
         with pytest.raises(HomeAssistantError, match="out of stock"):
-            await hass.services.async_call("button", "press", {"entity_id": "button.octoplus_claim_zoo"}, blocking=True)
+            await hass.services.async_call("button", "press", {"entity_id": "button.octoplus_a_3_claim_zoo"}, blocking=True)
         assert hass.states.get("sensor.octoplus_a_3_active_rewards").state == "0"
         # press -> claim, refresh shows the new reward
         st.return_value = status(offers=(OFFER, OFFER2), rewards=[old, reward])
-        await hass.services.async_call("button", "press", {"entity_id": "button.octoplus_claim_free_coffee"}, blocking=True)
+        await hass.services.async_call("button", "press", {"entity_id": "button.octoplus_a_3_claim_free_coffee"}, blocking=True)
         cl.assert_awaited_with("free-coffee")
         assert claimed[-1].data["codes"] == ["XYZ"]
         assert hass.states.get("sensor.octoplus_a_3_active_rewards").state == "1"
         # service with response
-        resp = await hass.services.async_call("octoplus", "claim_offer", {"offer_slug": "free-coffee"}, blocking=True, return_response=True)
+        resp = await hass.services.async_call("octoplus", "claim_offer", {"offer_slug": "free-coffee", "config_entry_id": entry.entry_id}, blocking=True, return_response=True)
         assert resp["codes"] == ["XYZ"] and resp["reward_id"] == "7"
         # offer disappears -> its button is removed
         st.return_value = status(offers=(OFFER,), rewards=[old, reward])
         await entry.runtime_data.async_refresh()
         await hass.async_block_till_done()
-    assert hass.states.get("button.octoplus_claim_zoo") is None
-    assert hass.states.get("button.octoplus_claim_free_coffee") is not None
+    assert hass.states.get("button.octoplus_a_3_claim_zoo") is None
+    assert hass.states.get("button.octoplus_a_3_claim_free_coffee") is not None
 
 
 async def test_points_and_auto_spin(hass: HomeAssistant, _extras):
@@ -150,3 +150,22 @@ async def test_extras_failure_does_not_break(hass: HomeAssistant):
         await hass.async_block_till_done()
     assert hass.states.get("sensor.octoplus_a_5_octopoints").state == "unavailable"
     assert hass.states.get("sensor.octoplus_a_5_offers").state == "1"
+
+
+async def test_two_accounts(hass: HomeAssistant):
+    e1 = MockConfigEntry(domain=DOMAIN, unique_id="A-6", data={"api_key": "k1", "account_number": "A-6"})
+    e2 = MockConfigEntry(domain=DOMAIN, unique_id="A-7", data={"api_key": "k2", "account_number": "A-7"})
+    e1.add_to_hass(hass); e2.add_to_hass(hass)
+    with patch.object(A.OctoplusApi, "status", AsyncMock(return_value=status())), \
+         patch.object(A.OctoplusApi, "claim", AsyncMock(return_value="1")) as cl:
+        assert await hass.config_entries.async_setup(e1.entry_id)
+        assert await hass.config_entries.async_setup(e2.entry_id)
+        await hass.async_block_till_done()
+        assert hass.states.get("button.octoplus_a_6_claim_free_coffee")
+        assert hass.states.get("button.octoplus_a_7_claim_free_coffee")
+        assert hass.states.get("sensor.octoplus_a_7_octopoints").state == "1234"
+        with pytest.raises(Exception, match="config_entry_id"):
+            await hass.services.async_call("octoplus", "claim_offer", {"offer_slug": "free-coffee"}, blocking=True, return_response=True)
+        await hass.services.async_call("octoplus", "claim_offer", {"offer_slug": "free-coffee", "config_entry_id": e2.entry_id}, blocking=True, return_response=True)
+        assert cl.await_count == 1
+    assert e1.runtime_data.api.account == "A-6" and e2.runtime_data.api.account == "A-7"

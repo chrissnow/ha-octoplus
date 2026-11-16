@@ -98,7 +98,7 @@ class OfferClaimButton(OctoplusEntity, ButtonEntity):
         super().__init__(coordinator, f"claim_{slug}")
         self.slug = slug
         self._attr_translation_key = None
-        self.entity_id = f"button.octoplus_claim_{slugify(slug)}"
+        self.entity_id = f"button.octoplus_{slugify(coordinator.account)}_claim_{slugify(slug)}"
 
     @property
     def _offer(self) -> dict[str, Any] | None:
