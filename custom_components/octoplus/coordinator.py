@@ -11,23 +11,28 @@ from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.util import dt as dt_util
 
 from .api import OctoplusApi, OctoplusAuthError, OctoplusError
 from .const import (
     CONF_ACCOUNT,
     CONF_AUTO_CLAIM,
     CONF_AUTO_SCRATCH,
+    CONF_AUTO_SPIN,
     CONF_NOTIFY,
     CONF_SCAN_MINUTES,
     DEFAULT_AUTO_CLAIM,
     DEFAULT_AUTO_SCRATCH,
+    DEFAULT_AUTO_SPIN,
     DEFAULT_SCAN_MINUTES,
     DOMAIN,
     EVENT_NEW_OFFER,
     EVENT_NEW_REWARD,
+    EVENT_OFFER_CLAIMED,
     EVENT_PRIZE_CLAIMED,
     EVENT_SCRATCHCARD,
     EVENT_STAMPCARD_COMPLETE,
+    EVENT_WHEEL_SPUN,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -61,6 +66,7 @@ class OctoplusCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         self.auto_scratch = opts.get(CONF_AUTO_SCRATCH, DEFAULT_AUTO_SCRATCH)
         self.auto_claim = opts.get(CONF_AUTO_CLAIM, DEFAULT_AUTO_CLAIM)
+        self.auto_spin = opts.get(CONF_AUTO_SPIN, DEFAULT_AUTO_SPIN)
         self.notify_service: str = (opts.get(CONF_NOTIFY) or "").strip()
         self._store: Store = Store(hass, STORE_VERSION, f"{DOMAIN}.{self.account}")
         self._seen: dict[str, list] | None = None
@@ -124,6 +130,74 @@ class OctoplusCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             await self.async_request_refresh()
         return card
 
+    async def async_claim_offer(self, slug: str) -> dict[str, Any]:
+        """Claim an offer by slug; returns the reward (with voucher codes) if found."""
+        offers = {o["slug"]: o for o in (self.data or {}).get("offers", [])}
+        offer = offers.get(slug, {"slug": slug})
+        reward_id = await self.api.claim(slug)
+        await self.async_refresh()
+        reward = next(
+            (r for r in (self.data or {}).get("rewards", [])
+             if str(r["id"]) == str(reward_id)
+             or (reward_id is None and r["claimedOffer"]["slug"] == slug)),
+            None,
+        )
+        codes = [v.get("code") for v in (reward or {}).get("vouchers", []) if v.get("code")]
+        result = {
+            "offer_slug": slug,
+            "offer": describe_offer(offer),
+            "reward_id": reward_id,
+            "codes": codes,
+            "expires": next(
+                (v.get("expiresAt") for v in (reward or {}).get("vouchers", []) if v.get("expiresAt")),
+                None,
+            ),
+        }
+        self._fire(EVENT_OFFER_CLAIMED, result)
+        await self._notify(
+            "Octoplus offer claimed",
+            describe_offer(offer) + (f" (code: {', '.join(codes)})" if codes else ""),
+        )
+        return result
+
+    async def _fetch_spins(self) -> dict[str, Any] | None:
+        try:
+            return await self.api.spins()
+        except OctoplusError as err:  # e.g. account without that fuel
+            _LOGGER.debug("Wheel of fortune query failed: %s", err)
+            return None
+
+    async def _fetch_points(self) -> dict[str, Any] | None:
+        try:
+            return await self.api.points()
+        except OctoplusError as err:
+            _LOGGER.debug("Loyalty points query failed: %s", err)
+            return None
+
+    async def async_spin(self, fuel: str | None = None, *, from_button: bool = False) -> dict:
+        """Spin the wheel once using a fuel type with spins left."""
+        spins = await self._fetch_spins() or {}
+        if fuel is None:
+            fuel = next(
+                (f for f in ("ELECTRICITY", "GAS")
+                 if ((spins.get(f.lower()) or {}).get("spinsAllowed") or 0) > 0),
+                None,
+            )
+        if fuel is None:
+            raise OctoplusError("No wheel of fortune spins available")
+        res = await self.api.spin(fuel)
+        prize = res.get("prize") or {}
+        unit = spins.get("wheelOfFortunePrizeType")
+        msg = f"Won {prize.get('display') or prize.get('value')}" + (
+            f" ({unit.replace('_', ' ').lower()})" if unit else ""
+        )
+        self._fire(EVENT_WHEEL_SPUN, {"fuel_type": fuel.lower(), "prize": prize,
+                                      "prize_type": unit, "message": msg})
+        await self._notify("Octopus wheel of fortune", msg)
+        if from_button:
+            await self.async_request_refresh()
+        return res
+
     # ------------------------------------------------------------ update
 
     async def _async_update_data(self) -> dict[str, Any]:
@@ -156,6 +230,23 @@ class OctoplusCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             raise ConfigEntryAuthFailed(str(err)) from err
         except OctoplusError as err:
             raise UpdateFailed(str(err)) from err
+
+        # ---- wheel of fortune + points (optional extras; failures don't fail the update)
+        spins = await self._fetch_spins()
+        if self.auto_spin and spins:
+            spun = False
+            for fuel in ("ELECTRICITY", "GAS"):
+                left = (spins.get(fuel.lower()) or {}).get("spinsAllowed") or 0
+                for _ in range(min(left, 10)):
+                    try:
+                        await self.async_spin(fuel)
+                        spun = True
+                    except OctoplusError as err:
+                        _LOGGER.warning("Wheel spin (%s) failed: %s", fuel, err)
+                        break
+            if spun:
+                spins = await self._fetch_spins()
+        points = await self._fetch_points()
 
         # ---- diff rewards / offers / stampcards (silent on first ever run)
         rewards = [r for r in (data.get("octoplusRewards") or []) if r]
@@ -204,9 +295,26 @@ class OctoplusCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._seen = seen
         await self._store.async_save(seen)
 
+        rewards = sorted(rewards, key=lambda r: r["claimedAt"], reverse=True)
+        now = dt_util.utcnow()
+
+        def _usable(r: dict) -> bool:
+            if r["status"] == "CANCELLED":
+                return False
+            exps = [dt_util.parse_datetime(v["expiresAt"]) for v in r.get("vouchers", [])
+                    if v.get("expiresAt")]
+            exps = [e for e in exps if e]
+            return not exps or max(exps) > now
+
         return {
             "scratch": data["octoplusActiveScratchcardData"],
-            "rewards": sorted(rewards, key=lambda r: r["claimedAt"], reverse=True),
+            "spins": spins,
+            "points": (points or {}).get("loyaltyPointsBalance", {}).get("balance") if points else None,
+            "points_history": [
+                e["node"] for e in ((points or {}).get("loyaltyPointsHistory") or {}).get("edges", [])
+            ],
+            "rewards": rewards,
+            "active_rewards": [r for r in rewards if _usable(r)],
             "offers": offers,
             "stampcards": stampcards,
         }

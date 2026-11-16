@@ -16,10 +16,12 @@ from .const import (
     CONF_ACCOUNT,
     CONF_AUTO_CLAIM,
     CONF_AUTO_SCRATCH,
+    CONF_AUTO_SPIN,
     CONF_NOTIFY,
     CONF_SCAN_MINUTES,
     DEFAULT_AUTO_CLAIM,
     DEFAULT_AUTO_SCRATCH,
+    DEFAULT_AUTO_SPIN,
     DEFAULT_SCAN_MINUTES,
     DOMAIN,
 )
@@ -107,6 +109,9 @@ class OctoplusOptionsFlow(OptionsFlow):
                     ): bool,
                     vol.Optional(
                         CONF_AUTO_CLAIM, default=o.get(CONF_AUTO_CLAIM, DEFAULT_AUTO_CLAIM)
+                    ): bool,
+                    vol.Optional(
+                        CONF_AUTO_SPIN, default=o.get(CONF_AUTO_SPIN, DEFAULT_AUTO_SPIN)
                     ): bool,
                     vol.Optional(
                         CONF_SCAN_MINUTES, default=o.get(CONF_SCAN_MINUTES, DEFAULT_SCAN_MINUTES)

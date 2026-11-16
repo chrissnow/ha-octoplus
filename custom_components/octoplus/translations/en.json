@@ -14,7 +14,9 @@
       },
       "reauth_confirm": {
         "title": "Re-enter Octopus API key",
-        "data": { "api_key": "Octopus API key" }
+        "data": {
+          "api_key": "Octopus API key"
+        }
       }
     },
     "error": {
@@ -35,7 +37,8 @@
           "auto_scratch": "Scratch the scratchcard automatically",
           "auto_claim": "Claim scratchcard prizes automatically",
           "scan_interval_minutes": "Check every (minutes)",
-          "notify_service": "Notify service (optional)"
+          "notify_service": "Notify service (optional)",
+          "auto_spin": "Spin the wheel of fortune automatically"
         },
         "data_description": {
           "notify_service": "e.g. notify.mobile_app_chris_phone. Leave blank to use the octoplus_* events in your own automations instead."
@@ -57,12 +60,48 @@
           "prize_not_claimed_in_time": "Prize expired"
         }
       },
-      "rewards": { "name": "Rewards" },
-      "offers": { "name": "Offers" },
-      "stamps": { "name": "Stamps" }
+      "rewards": {
+        "name": "Rewards"
+      },
+      "offers": {
+        "name": "Offers"
+      },
+      "stamps": {
+        "name": "Stamps"
+      },
+      "active_rewards": {
+        "name": "Active rewards"
+      },
+      "octopoints": {
+        "name": "Octopoints"
+      },
+      "wheel_spins": {
+        "name": "Wheel spins"
+      }
     },
     "button": {
-      "scratch": { "name": "Scratch now" }
+      "scratch": {
+        "name": "Scratch now"
+      },
+      "spin": {
+        "name": "Spin wheel"
+      }
+    }
+  },
+  "services": {
+    "claim_offer": {
+      "name": "Claim offer",
+      "description": "Claim an Octoplus offer by its slug. Returns the reward's voucher codes.",
+      "fields": {
+        "offer_slug": {
+          "name": "Offer slug",
+          "description": "The offer's slug (offer_slug attribute on its Claim button)."
+        },
+        "config_entry_id": {
+          "name": "Account",
+          "description": "Only needed if you have more than one Octoplus account."
+        }
+      }
     }
   }
 }

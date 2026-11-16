@@ -1,0 +1,12 @@
+claim_offer:
+  fields:
+    offer_slug:
+      required: true
+      example: greggs-free-hot-drink-pf26
+      selector:
+        text:
+    config_entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: octoplus

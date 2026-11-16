@@ -10,7 +10,10 @@ from .const import BACKEND_API, PUBLIC_API
 
 TOKEN_LIFETIME = 50 * 60  # Kraken JWTs last ~60 min; refresh a bit early
 
-OFFER_FIELDS = "slug name partnerName priceTag claimBy"
+OFFER_FIELDS = (
+    "slug name description partnerName priceTag claimBy "
+    "claimAbility { canClaimOffer cannotClaimReason }"
+)
 
 Q_STATUS = f"""
 query($acc: String!) {{
@@ -59,6 +62,32 @@ mutation($acc: String!, $slug: String!) {
   claimOctoplusReward(accountNumber: $acc, offerSlug: $slug) { rewardId }
 }"""
 
+Q_POINTS = """
+query($acc: String!) {
+  loyaltyPointsBalance(accountNumber: $acc) { balance }
+  loyaltyPointsHistory(accountNumber: $acc, first: 10) {
+    edges { node { entryType reason value balanceAfter postedAt note } }
+  }
+}"""
+
+Q_SPINS = """
+query($acc: String!) {
+  electricity: wheelOfFortuneSpinsAllowed(accountNumber: $acc, fuelType: ELECTRICITY) {
+    spinsAllowed maxSpins
+  }
+  gas: wheelOfFortuneSpinsAllowed(accountNumber: $acc, fuelType: GAS) {
+    spinsAllowed maxSpins
+  }
+  wheelOfFortunePrizeType(accountNumber: $acc)
+}"""
+
+M_SPIN = """
+mutation($acc: String!, $fuel: FuelType!) {
+  spinWheelOfFortune(input: {accountNumber: $acc, fuelType: $fuel}) {
+    spinReference prize { value display }
+  }
+}"""
+
 M_TOKEN = """
 mutation($k: String!) { obtainKrakenToken(input: {APIKey: $k}) { token } }"""
 
@@ -83,15 +112,18 @@ class OctoplusApi:
         headers = {"Content-Type": "application/json"}
         if token:
             headers["Authorization"] = token
-        async with self._session.post(
-            url,
-            json={"query": query, "variables": variables},
-            headers=headers,
-            timeout=aiohttp.ClientTimeout(total=30),
-        ) as resp:
-            if resp.status >= 500:
-                raise OctoplusError(f"HTTP {resp.status}")
-            data = await resp.json(content_type=None)
+        try:
+            async with self._session.post(
+                url,
+                json={"query": query, "variables": variables},
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                if resp.status >= 500:
+                    raise OctoplusError(f"HTTP {resp.status}")
+                data = await resp.json(content_type=None)
+        except (aiohttp.ClientError, TimeoutError, ValueError) as err:
+            raise OctoplusError(f"Request failed: {err}") from err
         if data.get("errors"):
             raise OctoplusError(str(data["errors"])[:500])
         return data["data"]
@@ -124,6 +156,16 @@ class OctoplusApi:
     async def scratch(self, session_ref: str) -> dict[str, Any]:
         d = await self.gql(M_SCRATCH, {"sess": session_ref})
         return d["scratchOctoplusScratchcard"]["scratchcard"]
+
+    async def points(self) -> dict[str, Any]:
+        return await self.gql(Q_POINTS)
+
+    async def spins(self) -> dict[str, Any]:
+        return await self.gql(Q_SPINS)
+
+    async def spin(self, fuel: str) -> dict[str, Any]:
+        d = await self.gql(M_SPIN, {"fuel": fuel})
+        return d["spinWheelOfFortune"]
 
     async def claim(self, slug: str) -> str | None:
         d = await self.gql(M_CLAIM, {"slug": slug})
