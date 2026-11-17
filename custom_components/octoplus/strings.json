@@ -45,7 +45,8 @@
         },
         "data_description": {
           "notify_service": "e.g. notify.mobile_app_chris_phone. Leave blank to use the octoplus_* events in your own automations instead.",
-          "auto_book_happy_hour": "Books the earliest available slot inside the time window once slots are announced (usually Thursdays), if you have tokens. Checks every 10 minutes until booked."
+          "auto_book_happy_hour": "Books the earliest available slot inside the time window once slots are announced (usually Thursdays), if you have tokens. Checks every 10 minutes until booked.",
+          "scan_interval_minutes": "1–1440. Each check makes about 5 requests to Octopus; very short intervals may get rate-limited."
         }
       }
     }

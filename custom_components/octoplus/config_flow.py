@@ -133,7 +133,7 @@ class OctoplusOptionsFlow(OptionsFlow):
                     ): TimeSelector(),
                     vol.Optional(
                         CONF_SCAN_MINUTES, default=o.get(CONF_SCAN_MINUTES, DEFAULT_SCAN_MINUTES)
-                    ): vol.All(vol.Coerce(int), vol.Range(min=15, max=1440)),
+                    ): vol.All(vol.Coerce(int), vol.Range(min=1, max=1440)),
                     vol.Optional(
                         CONF_NOTIFY, description={"suggested_value": o.get(CONF_NOTIFY, "")}
                     ): str,

@@ -34,10 +34,12 @@ from .const import (
     DEFAULT_SCAN_MINUTES,
     DOMAIN,
     EVENT_HH_BOOKED,
+    EVENT_HH_RESTOCKED,
     EVENT_HH_SLOTS,
     EVENT_NEW_OFFER,
     EVENT_NEW_REWARD,
     EVENT_OFFER_CLAIMED,
+    EVENT_OFFER_RESTOCKED,
     EVENT_PRIZE_CLAIMED,
     EVENT_SCRATCHCARD,
     EVENT_STAMPCARD_COMPLETE,
@@ -465,6 +467,25 @@ class OctoplusCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         "A stampcard is ready to exchange in the Octopus app.",
                     )
 
+        # ---- back in stock: offers that were OUT_OF_STOCK and are claimable again
+        out_of_stock = [
+            o["slug"] for o in offers
+            if (o.get("claimAbility") or {}).get("cannotClaimReason") == "OUT_OF_STOCK"
+        ]
+        was_oos = set(seen.get("oos_offers", []))
+        restocked = [
+            o for o in offers
+            if o["slug"] in was_oos and (o.get("claimAbility") or {}).get("canClaimOffer") is not False
+        ]
+        for o in restocked:
+            self._fire(EVENT_OFFER_RESTOCKED, {"offer": o})
+        if restocked:
+            await self._notify(
+                "Octoplus offer back in stock",
+                "; ".join(describe_offer(o) for o in restocked)[:500],
+            )
+        seen["oos_offers"] = out_of_stock
+
         seen.setdefault("hh_slots", [])
         seen.setdefault("hh_booked", [])
         if hh:
@@ -490,6 +511,21 @@ class OctoplusCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                             f"Free electricity {_fmt_slot(sl)}.",
                         )
             self._auto_booked.clear()
+            # a full slot that has space again
+            was_full = set(seen.get("hh_full", []))
+            freed = [
+                sl for sl in hh["slots"]
+                if sl["id"] in was_full and not sl["booked"]
+                and sl["capacity"] in ("available", "low") and sl["status"] == "upcoming"
+            ]
+            for sl in freed:
+                self._fire(EVENT_HH_RESTOCKED, {"slot": sl})
+            if freed:
+                await self._notify(
+                    "Happy Hour slot freed up",
+                    ", ".join(_fmt_slot(sl) for sl in freed) + f". You have {hh.get('tokens') or 0} token(s).",
+                )
+            seen["hh_full"] = [sl["id"] for sl in hh["slots"] if sl["capacity"] == "full"]
 
         # keep the store bounded
         for k in seen:

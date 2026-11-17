@@ -8,6 +8,7 @@ Custom integration for Octopus Energy's **Octoplus** rewards scheme:
 - An **Octoplus card** (bundled, no other cards needed): offers with Claim buttons, active rewards with codes, points, spins and scratchcard
 - An `octoplus.claim_offer` action for automations
 - Octopoints balance, and wheel-of-fortune spins (auto-spin optional)
+- Alerts when an out-of-stock offer or a full Happy Hour slot becomes available again
 - **Weekend Happy Hours**: tokens, this weekend's slots with capacity, book/cancel from the card, optional auto-booking inside a time window, and a binary sensor that's on during your booked hour
 - Fires events for your own automations
 
@@ -24,7 +25,7 @@ Copy `custom_components/octoplus` to `/config/custom_components/` (or add this r
 | Spin the wheel of fortune automatically | off |
 | Book Weekend Happy Hours automatically | off |
 | Auto-book window (earliest start / latest end) | any time |
-| Check every (minutes) | 60 |
+| Check every (minutes, 1–1440) | 60 |
 | Notify service | blank (e.g. `notify.mobile_app_phone`) |
 
 ## Entities
@@ -64,7 +65,7 @@ With auto-booking on, the integration checks every 10 minutes from Thursday (whe
 
 ## Events
 
-`octoplus_scratchcard`, `octoplus_prize_claimed`, `octoplus_offer_claimed`, `octoplus_wheel_spun`, `octoplus_happy_hour_slots`, `octoplus_happy_hour_booked`, `octoplus_new_reward`, `octoplus_new_offer`, `octoplus_stampcard_complete`. The first refresh after setup records existing rewards/offers silently.
+`octoplus_scratchcard`, `octoplus_prize_claimed`, `octoplus_offer_claimed`, `octoplus_wheel_spun`, `octoplus_happy_hour_slots`, `octoplus_happy_hour_booked`, `octoplus_offer_restocked`, `octoplus_happy_hour_restocked`, `octoplus_new_reward`, `octoplus_new_offer`, `octoplus_stampcard_complete`. The first refresh after setup records existing rewards/offers silently.
 
 ## Tests
 

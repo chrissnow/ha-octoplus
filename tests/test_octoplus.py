@@ -373,3 +373,50 @@ async def test_happy_hour_binary_sensor_flips_on_time(hass: HomeAssistant):
             async_fire_time_changed(hass, start + timedelta(hours=1, seconds=1))
             await hass.async_block_till_done()
             assert hass.states.get(eid).state == "off"
+
+
+
+async def test_restock_alerts(hass: HomeAssistant):
+    from homeassistant.util import dt as dt_util
+    calls = []
+    hass.services.async_register("notify", "phone", lambda c: calls.append(c.data))
+    start = dt_util.now() + timedelta(days=2)
+    entry = MockConfigEntry(domain=DOMAIN, unique_id="C-1", data={"api_key": "k", "account_number": "C-1"},
+                            options={"notify_service": "notify.phone", "scan_interval_minutes": 1})
+    entry.add_to_hass(hass)
+    oos = {**OFFER2, "slug": "zoo"}  # OUT_OF_STOCK
+    back = {**OFFER2, "claimAbility": {"canClaimOffer": True, "cannotClaimReason": None}}
+    offer_ev = async_capture_events(hass, "octoplus_offer_restocked")
+    hh_ev = async_capture_events(hass, "octoplus_happy_hour_restocked")
+    st = AsyncMock(return_value=status(offers=(OFFER, oos)))
+    hh = AsyncMock(return_value=_hh([_ev(21, start, cap="FULL")]))
+    with patch.object(A.OctoplusApi, "status", st), patch.object(A.OctoplusApi, "happy_hours", hh):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        assert entry.runtime_data.update_interval == timedelta(minutes=1)
+        # still out of stock / full -> nothing
+        await entry.runtime_data.async_refresh(); await hass.async_block_till_done()
+        assert not offer_ev and not hh_ev
+        # restock both
+        st.return_value = status(offers=(OFFER, back))
+        hh.return_value = _hh([_ev(21, start, cap="LOW")])
+        await entry.runtime_data.async_refresh(); await hass.async_block_till_done()
+        assert offer_ev[0].data["offer"]["slug"] == "zoo" and hh_ev[0].data["slot"]["code"] == "HH21"
+        titles = [c["title"] for c in calls]
+        assert "Octoplus offer back in stock" in titles and "Happy Hour slot freed up" in titles
+        # no repeat alert next time
+        n = len(calls)
+        await entry.runtime_data.async_refresh(); await hass.async_block_till_done()
+        assert len(calls) == n
+
+
+async def test_options_allow_one_minute(hass: HomeAssistant):
+    entry = MockConfigEntry(domain=DOMAIN, unique_id="C-2", data={"api_key": "k", "account_number": "C-2"})
+    entry.add_to_hass(hass)
+    with patch.object(A.OctoplusApi, "status", AsyncMock(return_value=status())):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        r = await hass.config_entries.options.async_init(entry.entry_id)
+        r = await hass.config_entries.options.async_configure(r["flow_id"], {"scan_interval_minutes": 1})
+        await hass.async_block_till_done()
+    assert r["type"] == "create_entry" and entry.options["scan_interval_minutes"] == 1
